@@ -12,7 +12,7 @@ a bug in extraction would feed both the Python rules and the Rego rules identica
 rule-logic cross-check, not two independent pipelines. It is deliberately scoped to artifacts the
 project already treats as security-relevant and for which a clean golden exists (Dockerfile, K8s,
 workflows); securityContext/runAsNonRoot is surfaced as ADVISORY, not a denial, because enforcing it
-needs per-image numeric UIDs validated on a live cluster (see SECURITY.md, deliberate trade-off #3).
+needs per-image numeric UIDs validated on a live cluster (deliberate demo trade-off, see README §9).
 """
 from __future__ import annotations
 
@@ -168,7 +168,7 @@ def _extract_workflow(path: Path) -> dict:
 # the live repo ignores the test fixtures/goldens and vendored dirs, while `analyze(fixtures/unsafe)`
 # pointed straight at a fixture still scans it (the ignored segment isn't in its relative path).
 # "bootstrap" is excluded: the gate governs the agent's GENERATED infra, not the human-authored
-# one-time bootstrap, whose public DB endpoints / demo trade-offs are documented in SECURITY.md.
+# one-time bootstrap, whose public DB endpoints / demo trade-offs are documented in README §9.
 _IGNORE_SEGMENTS = frozenset(
     {".git", ".venv", "venv", "node_modules", "__pycache__", "fixtures", "goldens", "bootstrap"}
 )
@@ -238,7 +238,7 @@ def derive_findings(ctx: Context) -> list[Finding]:
         if pod.get("privileged"):
             out.append(Finding("K8S_PRIVILEGED", "HIGH", obj, "privileged container (full host access)"))
         if not pod["runs_nonroot"]:
-            out.append(Finding("POD_NOT_NONROOT", "ADVISORY", obj, "no runAsNonRoot (SECURITY.md trade-off #3)"))
+            out.append(Finding("POD_NOT_NONROOT", "ADVISORY", obj, "no runAsNonRoot (deliberate demo trade-off)"))
     for img in ctx.images:
         # The pre-sed job.yaml image sentinel is a valid placeholder (the CI step rewrites it to the
         # real registry URL); it is NOT a public :latest image. validate_generated_code exempts it too.

@@ -1,6 +1,6 @@
 """Deterministic artifact generation — code-owned artifacts the LLM used to copy.
 
-Per the LLM-vs-deterministic boundary (CLAUDE.md): the LLM owns judgment under
+Per the LLM-vs-deterministic boundary (docs/ARCHITECTURE.md §5): the LLM owns judgment under
 variability (schema → pandas/SQL); deterministic code owns everything mechanically
 determined. The artifacts rendered here have ZERO open inputs — every value comes
 from the pipeline config — so an LLM step for them was pure cost/latency/variance

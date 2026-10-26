@@ -253,7 +253,7 @@ _CI_INFRA_SIGNATURES = (
     # Credential-resolution failure: cloud_get() returned None (AWS IRSA missing ssm:GetParameter, or an
     # unset GCP/Azure env var) → db_host is the string "None" → the DB connect fails. The plumbing is the
     # generated IAM policy / K8s secret, NOT the script (which reads the host via cloud_get, never
-    # hardcodes it) — so this is infra, per CLAUDE.md ("Missing it → cloud_get() returns None → host name
+    # hardcodes it) — so this is infra, per the credential-resolution rule ("Missing it → cloud_get() returns None → host name
     # 'None' error"). Without it the create_engine frame mis-routes the credential plumbing to architect.
     'host name "none"',
 )

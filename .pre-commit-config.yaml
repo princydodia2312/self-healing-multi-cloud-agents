@@ -1,5 +1,5 @@
-# Local quality gates — mirrors what CI enforces (tests.yml lint + security.yml
-# secret scan + the terraform fmt gate). Install once with:
+# Local quality gates — mirrors what CI enforces (tests.yml lint + the terraform fmt gate)
+# plus a local gitleaks secret scan. Install once with:
 #   uv run pre-commit install
 #
 # Generated agent OUTPUTS are excluded — they are never edited by hand (fixed

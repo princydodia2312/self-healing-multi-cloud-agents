@@ -1475,7 +1475,7 @@ def _fix_fstring_double_braces(content: str) -> str:
 #   ✅ ('sales_eu', 'tbl', 'ADD')
 # Both fail only at RUNTIME (init-trino's own CALL uses the correct form, masking it). Normalise
 # to the 3-arg form → a generation guarantee, not a patch. No-op when already correct. See
-# CLAUDE.md "Deterministic generation guarantees".
+# docs/ARCHITECTURE.md "Deterministic generation guarantees".
 _SYNC_CALL_RE = re.compile(r"sync_partition_metadata\(([^)]*)\)")
 _SYNC_PREFIX_RE = re.compile(r"^(['\"])[A-Za-z0-9_]+\.([A-Za-z0-9_]+)\1$")
 
@@ -1501,7 +1501,7 @@ def _fix_sync_partition_schema_arg(content: str) -> str:
 # This does NOT touch semantic choices (e.g. DOUBLE→DECIMAL for money vs INTEGER for a count) —
 # those stay the LLM's judgement; the guard only guarantees the DDL PARSES. \1 = the column name
 # (TEXT/STRING must be in type position, i.e. follow an identifier, so a column NAMED 'text' is
-# untouched). See CLAUDE.md "Deterministic generation guarantees".
+# untouched). See docs/ARCHITECTURE.md "Deterministic generation guarantees".
 _TRINO_TYPE_FIXES = (
     (re.compile(r"\bDOUBLE\s+PRECISION\b", re.IGNORECASE), "DOUBLE"),
     (re.compile(r"\bCHARACTER\s+VARYING\b", re.IGNORECASE), "VARCHAR"),
@@ -1522,7 +1522,7 @@ def _fix_trino_ddl_types(content: str) -> str:
 # invalid JSON. The audit table name IS reliably substituted by the LLM, so we extract it from
 # the (possibly broken) content and rebuild the WHOLE dashboard from the canonical structure
 # (the skeleton in databricks_spark_standard.md). Guarantees a structurally-valid Lakeview
-# dashboard every time. See CLAUDE.md "Deterministic generation guarantees".
+# dashboard every time. See docs/ARCHITECTURE.md "Deterministic generation guarantees".
 _LAKEVIEW_AUDIT_RE = re.compile(r"\b\w+\.\w+\.\w+_audit\b")
 
 
@@ -1612,7 +1612,7 @@ def write_project_file(filename: str, content: str):
         # delta and the source JDBC driver is a Maven library. The LLM intermittently emits a
         # pyspark-only requirements.txt anyway; a pyspark-only file is the databricks signature
         # (a K8s requirements.txt always carries pandas/s3fs/sqlalchemy/…), so skip it (and remove
-        # any already on disk). Deterministic guarantee — see CLAUDE.md.
+        # any already on disk). Deterministic guarantee — see docs/ARCHITECTURE.md.
         _reqs = [ln.strip() for ln in content.splitlines()
                  if ln.strip() and not ln.strip().startswith("#")]
         if _is_databricks_run() or _reqs == ["pyspark"]:
@@ -1661,7 +1661,7 @@ def write_project_file(filename: str, content: str):
 
     # Deterministic Lakeview dashboard: rebuild from the canonical structure so the LLM's mangled
     # nested encodings can't produce invalid JSON. The audit table name is reliably substituted by
-    # the LLM → extract it and regenerate the whole dashboard. (See CLAUDE.md.)
+    # the LLM → extract it and regenerate the whole dashboard. (See docs/ARCHITECTURE.md.)
     if filepath.endswith("_lakeview.json"):
         _audit = _LAKEVIEW_AUDIT_RE.search(content)
         if _audit:
