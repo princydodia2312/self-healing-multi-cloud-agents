@@ -26,6 +26,11 @@ spec:
         env:
         - name: GF_USERS_DEFAULT_LANGUAGE
           value: "en-US"
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: grafana-admin
+              key: admin-password
         resources:
           requests:
             memory: "512Mi"
@@ -54,6 +59,8 @@ metadata:
   labels:
     project_id: multi-cloud-self-healing-agent
     component: grafana
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
 spec:
   selector:
     app: grafana

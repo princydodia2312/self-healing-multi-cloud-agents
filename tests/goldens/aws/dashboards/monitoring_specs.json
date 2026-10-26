@@ -1,11 +1,18 @@
 {
-  "uid": "global-marketing-data-observability",
-  "title": "Global Marketing Data Observability",
+  "uid": "eu-sales-data-observability",
+  "title": "EU Sales Data Observability",
   "schemaVersion": 37,
   "version": 1,
   "refresh": "5m",
-  "time": { "from": "now-6h", "to": "now" },
-  "tags": ["data-pipeline", "global-marketing", "gcp"],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "tags": [
+    "data-pipeline",
+    "eu-sales",
+    "aws"
+  ],
   "templating": {
     "list": [
       {
@@ -35,8 +42,21 @@
       "title": "Record Count",
       "type": "stat",
       "datasource": "Prometheus",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
-      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "green" }, "graphMode": "area" } },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "graphMode": "area"
+        }
+      },
       "targets": [
         {
           "expr": "pipeline_rows_processed_total{cloud_provider=~\"$cloud_provider\", project_id=~\"$project_id\"}",
@@ -49,11 +69,19 @@
       "title": "Last Success",
       "type": "stat",
       "datasource": "Prometheus",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "time:YYYY-MM-DD HH:mm:ss",
-          "color": { "mode": "fixed", "fixedColor": "blue" }
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          }
         }
       },
       "targets": [
@@ -68,18 +96,39 @@
       "title": "Rejection Rate",
       "type": "stat",
       "datasource": "Prometheus",
-      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
-      "options": { "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "min": 0,
           "max": 100,
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "yellow", "value": 20 },
-            { "color": "red", "value": 50 }
-          ] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 20
+              },
+              {
+                "color": "red",
+                "value": 50
+              }
+            ]
+          }
         }
       },
       "targets": [
@@ -94,15 +143,32 @@
       "title": "Run Duration",
       "type": "gauge",
       "datasource": "Prometheus",
-      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "yellow", "value": 60 },
-            { "color": "red", "value": 120 }
-          ] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 120
+              }
+            ]
+          }
         }
       },
       "targets": [
@@ -117,11 +183,28 @@
       "title": "Rejections by Reason",
       "type": "piechart",
       "datasource": "Prometheus",
-      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 8 },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 8
+      },
       "options": {
         "pieType": "pie",
-        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
-        "reduceOptions": { "values": false, "calcs": ["lastNotNull"] }
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
       },
       "targets": [
         {
@@ -130,13 +213,5 @@
         }
       ]
     }
-  ],
-  "alerting": {
-    "name": "Global Marketing — Data Silence Alert",
-    "condition": "no data for 60 minutes",
-    "severity": "critical",
-    "for": "60m",
-    "labels": { "severity": "critical", "pipeline": "global-marketing", "cloud_provider": "gcp" },
-    "annotations": { "summary": "No data received for Global Marketing pipeline (GCP) in the last 60 minutes." }
-  }
+  ]
 }
