@@ -72,12 +72,21 @@ def get_hourly_throughput(pipeline_id: str, hours: int = 24) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def get_cloud_breakdown(pipeline_id: str) -> pd.DataFrame:
-    """Simulated per-cloud latency comparison."""
+def get_partition_breakdown(pipeline_id: str, days: int = 7) -> pd.DataFrame:
+    """Simulated per-partition (run_date) stats of the Parquet data lake: rows written to S3,
+    rows rejected by the business rules, Parquet size and file count."""
     rng = random.Random(_seed(pipeline_id) + 1)
-    return pd.DataFrame({
-        "cloud":       ["AWS", "Azure", "GCP"],
-        "avg_ms":      [rng.randint(120, 300), rng.randint(140, 320), rng.randint(100, 280)],
-        "p99_ms":      [rng.randint(400, 900), rng.randint(420, 950), rng.randint(380, 860)],
-        "error_rate":  [round(rng.uniform(0.01, 0.12), 3) for _ in range(3)],
-    })
+    today = datetime.date.today()
+    rows = []
+    for i in range(days):
+        written = rng.randint(180_000, 450_000)
+        rejected = int(written * rng.uniform(0.002, 0.02))
+        rows.append({
+            "run_date":     (today - datetime.timedelta(days=i)).isoformat(),
+            "rows_written": written,
+            "rows_rejected": rejected,
+            "reject_pct":   round(rejected / written * 100, 2),
+            "parquet_mb":   round(written * rng.uniform(0.00009, 0.00012), 1),
+            "files":        rng.randint(1, 4),
+        })
+    return pd.DataFrame(rows)

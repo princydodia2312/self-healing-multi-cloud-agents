@@ -1,3 +1,12 @@
+"""
+Chaos seeder — loads deliberately dirty sales rows into the source database so the
+agents' generated pipeline hits real data-quality problems (negative prices, NULL
+quantities, future dates, unknown currencies) and the self-healing loop has
+something to fix.
+
+    python scripts/seed_chaos.py --target eu_sales --db-type postgres --rows 100
+    python scripts/seed_chaos.py --target eu_sales --db-type sqlite   # local file in data/
+"""
 import os
 import sys
 import argparse
@@ -11,7 +20,7 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from utils.cloud_config import cloud_get
+from utils.cloud_config import cloud_get  # noqa: E402
 
 # --- LOGGING CONFIGURATION ---
 logging.basicConfig(
@@ -28,16 +37,14 @@ if os.path.exists(env_path):
 
 fake = Faker()
 
+TARGETS = ["eu_sales"]
+
+
 def create_chaos_data(target, n_rows=100):
-    """
-    Generates a DataFrame with intentional anomalies for a specific target only.
-    This saves memory by not generating unused data.
-    """
+    """Generate a DataFrame with intentional anomalies for the given target."""
     logger.info(f"Generating chaos data for target: {target}")
 
-    if target in ("eu_sales", "sales_lakehouse"):
-        # sales_lakehouse reuses the EU-Sales schema (same business rules) but lands in its
-        # OWN dedicated RDS / table — see build_engine + raw_{target}.
+    if target == "eu_sales":
         data_list = []
         for _ in range(n_rows):
             data_list.append({
@@ -49,216 +56,95 @@ def create_chaos_data(target, n_rows=100):
             })
         return pd.DataFrame(data_list)
 
-    elif target == "us_crm":
-        data_list = []
-        for _ in range(n_rows):
-            data_list.append({
-                "cust_id": np.random.choice([fake.unique.random_int(1000, 9999), 1000], p=[0.95, 0.05]),
-                "full_name": fake.name(),
-                "email_address": np.random.choice([fake.email(), "invalid_email.com", None], p=[0.8, 0.1, 0.1]),
-                "phone_number": np.random.choice([fake.phone_number(), "123", None], p=[0.8, 0.1, 0.1]),
-            })
-        return pd.DataFrame(data_list)
-
-    elif target == "global_marketing":
-        data_list = []
-        platforms = ["Google_Ads", "FB", "Instagram", "Meta", "TikTok"]
-        for _ in range(n_rows):
-            data_list.append({
-                "campaign_id": fake.bothify(text="CMP-####"),
-                "platform_name": np.random.choice(platforms),
-                "ad_spend": np.random.choice([fake.pyfloat(left_digits=3, right_digits=2, positive=True), "not_a_number", None], p=[0.8, 0.1, 0.1]),
-                "clicks": np.random.randint(0, 1000),
-                # impressions: normally >> clicks; the small-value chaos makes clicks > impressions
-                # so the engagement_logic_check FLAG_AS_SUSPICIOUS rule has rows to flag.
-                "impressions": np.random.choice([np.random.randint(1000, 50000), np.random.randint(0, 50), None], p=[0.8, 0.1, 0.1]),
-                # event_timestamp: the future-dated chaos trips the temporal_validity rule.
-                "event_timestamp": np.random.choice([fake.date_time_this_year(), fake.future_datetime(end_date="+2y"), None], p=[0.8, 0.1, 0.1]),
-            })
-        return pd.DataFrame(data_list)
-
     return pd.DataFrame()
 
-def build_engine(db_type, target):
+
+def build_engine(db_type, target="eu_sales"):
     """
-    Dynamically creates a SQLAlchemy engine.
-    Each target maps to its own cloud database with dedicated env var prefixes:
-      eu_sales        → AWS RDS PostgreSQL       → POSTGRES_DB_*
-      us_crm          → Azure PostgreSQL          → CRM_DB_*
-      global_marketing→ GCP Cloud SQL MySQL       → MYSQL_DB_*
+    Create a SQLAlchemy engine for the source database.
+      sqlite   → data/<target>_raw.db (local, no cloud)
+      postgres → AWS RDS PostgreSQL, credentials via cloud_get (SSM → bootstrap file → POSTGRES_DB_*)
+      mysql    → MySQL source, credentials via cloud_get(db_type="mysql") (MYSQL_DB_*)
     """
     if db_type == "sqlite":
         db_path = os.path.join("data", f"{target}_raw.db")
         return create_engine(f"sqlite:///{db_path}")
 
-    # Target-specific credential prefix — each cloud has its own DB secrets
-    CREDENTIAL_MAP = {
-        "eu_sales":         {"prefix": "POSTGRES", "driver": "postgresql+psycopg2", "default_port": "5432"},
-        "sales_lakehouse":  {"prefix": "POSTGRES", "driver": "postgresql+psycopg2", "default_port": "5432"},
-        "us_crm":           {"prefix": "CRM",      "driver": "postgresql+psycopg2", "default_port": "5432"},
-        "global_marketing": {"prefix": "MYSQL",    "driver": "mysql+pymysql",       "default_port": "3306"},
-    }
-
-    if target in CREDENTIAL_MAP:
-        cfg = CREDENTIAL_MAP[target]
-        driver = cfg["driver"]
-        default_port = cfg["default_port"]
-
-        # eu_sales → AWS RDS via SSM; global_marketing → GCP env fallback
-        if target == "eu_sales":
-            host    = cloud_get("aws", "rds_host")
-            port    = cloud_get("aws", "rds_port") or default_port
-            user    = cloud_get("aws", "rds_username")
-            password = cloud_get("aws", "rds_password")
-            db_name = cloud_get("aws", "rds_db_name")
-        elif target == "sales_lakehouse":
-            # Databricks source RDS — its own SSM keys (lakehouse_db_*), same as the AWS
-            # 3-tier pattern. No POSTGRES_DB_* env / .env dependency.
-            host    = cloud_get("aws", "lakehouse_db_host")
-            port    = cloud_get("aws", "lakehouse_db_port") or default_port
-            user    = cloud_get("aws", "lakehouse_db_user")
-            password = cloud_get("aws", "lakehouse_db_password")
-            db_name = cloud_get("aws", "lakehouse_db_name")
-        elif target == "global_marketing":
-            # GCP source is Cloud SQL for MySQL → db_type="mysql" so cloud_get resolves the
-            # MYSQL_DB_* env fallbacks (not the POSTGRES_DB_* default), matching the prefix above.
-            host    = cloud_get("gcp", "db_host",     db_type="mysql")
-            port    = cloud_get("gcp", "db_port",     db_type="mysql") or default_port
-            user    = cloud_get("gcp", "db_user",     db_type="mysql")
-            password = cloud_get("gcp", "db_password", db_type="mysql")
-            db_name = cloud_get("gcp", "db_name",     db_type="mysql")
-        else:  # us_crm (Azure) — env var fallback until Azure Secret Manager is set up
-            prefix = cfg["prefix"]
-            host    = os.getenv(f"{prefix}_DB_HOST")
-            port    = os.getenv(f"{prefix}_DB_PORT", default_port)
-            user    = os.getenv(f"{prefix}_DB_USER")
-            password = os.getenv(f"{prefix}_DB_PASSWORD")
-            db_name = os.getenv(f"{prefix}_DB_NAME")
-
-        # URL-encode user/password: a special char (@ : / # %) in the password otherwise
-        # breaks SQLAlchemy URL parsing and the wrong password is sent → "Access denied".
-        url = f"{driver}://{quote_plus(user or '')}:{quote_plus(password or '')}@{host}:{port}/{db_name}"
-        return create_engine(url)
-
-    # Fallback for explicit db_type (backward compat)
     if db_type == "postgres":
-        url = f"postgresql+psycopg2://{cloud_get('aws','rds_username')}:{cloud_get('aws','rds_password')}@{cloud_get('aws','rds_host')}:{cloud_get('aws','rds_port') or '5432'}/{cloud_get('aws','rds_db_name')}"
-        return create_engine(url)
+        driver, default_port = "postgresql+psycopg2", "5432"
+    elif db_type == "mysql":
+        driver, default_port = "mysql+pymysql", "3306"
+    else:
+        raise ValueError(f"Unsupported DB type: {db_type}")
 
-    if db_type == "mysql":
-        url = f"mysql+pymysql://{cloud_get('gcp','db_user',db_type='mysql')}:{cloud_get('gcp','db_password',db_type='mysql')}@{cloud_get('gcp','db_host',db_type='mysql')}:{cloud_get('gcp','db_port',db_type='mysql') or '3306'}/{cloud_get('gcp','db_name',db_type='mysql')}"
-        return create_engine(url)
+    host = cloud_get("aws", "db_host", db_type=db_type)
+    port = cloud_get("aws", "db_port", db_type=db_type) or default_port
+    user = cloud_get("aws", "db_user", db_type=db_type)
+    password = cloud_get("aws", "db_password", db_type=db_type)
+    db_name = cloud_get("aws", "db_name", db_type=db_type)
 
-    raise ValueError(f"Unsupported DB type: {db_type}")
-
-
-# Each NL cloud reads from the SAME source DB as its validated pipeline (the agent resolves
-# creds via that pipeline's SSM/env wiring), so seed a user sample onto that cloud's source
-# DB by reusing the validated target's connection in build_engine.
-_CLOUD_SOURCE_TARGET = {"aws": "eu_sales", "azure": "us_crm", "gcp": "global_marketing",
-                        "databricks": "sales_lakehouse"}
+    # URL-encode user/password: a special char (@ : / # %) in the password otherwise
+    # breaks SQLAlchemy URL parsing and the wrong password is sent → "Access denied".
+    url = f"{driver}://{quote_plus(user or '')}:{quote_plus(password or '')}@{host}:{port}/{db_name}"
+    return create_engine(url)
 
 
-def seed_dataframe_to_source(df: pd.DataFrame, slug: str, cloud: str = "aws") -> str:
-    """
-    Load a user-supplied sample ("bring your own data" via the NL/Streamlit surface) into the
-    cloud's source database as `raw_<slug>`, so a runtime-authored pipeline whose source_table
-    is `raw_<slug>` has a real table to extract at deploy time. Reuses build_engine's per-cloud
-    connection via the cloud's validated source target (AWS→eu_sales RDS, Azure→us_crm
-    PostgreSQL, GCP→global_marketing MySQL). Returns the table name written.
-    """
-    if df is None or df.empty:
-        raise ValueError("Empty dataset — nothing to seed into the source database.")
-    target = _CLOUD_SOURCE_TARGET.get(cloud)
-    if target is None:
-        raise ValueError(f"Unsupported cloud for seeding: {cloud!r} (aws|azure|gcp).")
-    db_type = "mysql" if cloud == "gcp" else "postgres"
-    engine = build_engine(db_type, target)
-    table_name = f"raw_{slug}"
+def _replace_table(engine, df: pd.DataFrame, table_name: str, what: str) -> None:
+    """Write df as table_name (REPLACE), logging how many rows are being dropped first."""
     with engine.connect() as _c:  # fail fast on a bad connection before to_sql
-        logger.info(f"Connection OK ({cloud}/{db_type}); writing sample to '{table_name}'…")
         try:
             _prev = _c.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar()
             logger.warning(
-                f"♻️  REPLACING '{table_name}': dropping {_prev} existing row(s) with the uploaded "
-                f"sample ({len(df)} rows). Destructive by design (source reset)."
+                f"♻️  REPLACING '{table_name}': dropping {_prev} existing row(s) with {len(df)} "
+                f"{what} rows. Destructive by design (source reset)."
             )
         except Exception:
             logger.info(f"'{table_name}' has no prior rows / does not exist yet — creating it.")
     df.to_sql(name=table_name, con=engine, if_exists="replace", index=False)
-    logger.info(f"✅ Seeded {len(df)} rows into source table '{table_name}' ({cloud})")
+
+
+def seed_dataframe_to_source(df: pd.DataFrame, slug: str, cloud: str = "aws") -> str:
+    """
+    Load a user-supplied sample ("bring your own data" via the Streamlit UI) into the AWS
+    source database (the eu_sales RDS) as `raw_<slug>`, so a pipeline whose source_table is
+    `raw_<slug>` has a real table to extract at deploy time. Returns the table name written.
+    """
+    if df is None or df.empty:
+        raise ValueError("Empty dataset — nothing to seed into the source database.")
+    if cloud != "aws":
+        raise ValueError(f"Unsupported cloud for seeding: {cloud!r} (only 'aws').")
+    table_name = f"raw_{slug}"
+    _replace_table(build_engine("postgres"), df, table_name, "uploaded sample")
+    logger.info(f"✅ Seeded {len(df)} rows into source table '{table_name}' (aws)")
     return table_name
 
 
 def seed_chaos(target_arg, db_type, n_rows):
-    available_targets = ["eu_sales", "us_crm", "global_marketing"]
-    targets_to_run = available_targets if target_arg == "all" else [target_arg]
+    targets_to_run = TARGETS if target_arg == "all" else [target_arg]
 
     for target in targets_to_run:
         try:
             df = create_chaos_data(target, n_rows=n_rows)
-
-            if not df.empty:
-                engine = build_engine(db_type, target)
-                table_name = f"raw_{target}"
-
-                # TEST CONNECTION: If it doesn't connect here, it will go to except
-                with engine.connect():   # connection test only — failure routes to except
-                    logger.info(f"Connection successful to {db_type} for target={target}")
-
-                logger.info(f"🔥 Injecting {n_rows} chaotic rows into '{table_name}'...")
-
-                # Transparency: this is a REPLACE (a deliberate reset to a known dirty dataset), so it
-                # DROPS whatever '{table_name}' held. Never do it silently — log the pre-existing count.
-                try:
-                    with engine.connect() as _c:
-                        _prev = _c.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar()
-                    logger.warning(
-                        f"♻️  REPLACING '{table_name}': dropping {_prev} existing row(s) and reseeding "
-                        f"{n_rows} chaos rows. This is destructive by design (chaos reset)."
-                    )
-                except Exception:
-                    logger.info(f"'{table_name}' has no prior rows / does not exist yet — creating it.")
-
-                df.to_sql(
-                    name=table_name,
-                    con=engine,
-                    if_exists="replace",
-                    index=False
-                )
-                logger.info(f"✅ Successfully seeded '{table_name}'")
-            else:
+            if df.empty:
                 logger.warning(f"⚠️ No data generated for target {target}")
-
+                continue
+            table_name = f"raw_{target}"
+            logger.info(f"🔥 Injecting {n_rows} chaotic rows into '{table_name}' ({db_type})...")
+            _replace_table(build_engine(db_type, target), df, table_name, "chaos")
+            logger.info(f"✅ Successfully seeded '{table_name}'")
         except Exception as e:
             logger.error(f"❌ FATAL ERROR for {target}: {str(e)}")
-            # Stop execution to see the error in GitHub Actions
-            exit(1)
+            # Stop execution so the error is visible in GitHub Actions
+            sys.exit(1)
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Advanced Chaos Engineering Engine")
-
-    parser.add_argument(
-        "--target",
-        choices=["eu_sales", "sales_lakehouse", "us_crm", "global_marketing", "all"],
-        default="all",
-        help="The functional scope of the data"
-    )
-
-    parser.add_argument(
-        "--db-type",
-        choices=["sqlite", "postgres", "mysql"],
-        default="postgres",
-        help="Database engine to use"
-    )
-
-    parser.add_argument(
-        "--rows",
-        type=int,
-        default=100,
-        help="Number of rows to generate per table"
-    )
-
+    parser = argparse.ArgumentParser(description="Chaos data seeder for the self-healing demo")
+    parser.add_argument("--target", choices=TARGETS + ["all"], default="eu_sales",
+                        help="Pipeline whose source table to seed")
+    parser.add_argument("--db-type", choices=["sqlite", "postgres", "mysql"], default="postgres",
+                        help="Database engine to use")
+    parser.add_argument("--rows", type=int, default=100, help="Number of rows to generate")
     args = parser.parse_args()
 
     os.makedirs("data", exist_ok=True)

@@ -30,15 +30,15 @@ if str(_REPO_ROOT) not in sys.path:
 
 from evals.harness.deterministic import evidence_gate_accepts, load_corpus, resolve_owner  # noqa: E402
 
-_MEDIC_INSTRUCTION = """You are the Medic in a self-healing multi-cloud data-pipeline agent. A CI run has FAILED.
+_MEDIC_INSTRUCTION = """You are the Medic in a self-healing AWS data-pipeline agent. A CI run has FAILED.
 Below is the exact CI log. Diagnose the root cause and call the request_fix tool EXACTLY ONCE.
 
 Routing (target_agent):
 - 'architect' — a SCRIPT-LOGIC bug in the pipeline code (KeyError / ValueError / TypeError /
-  NameError / AttributeError / AnalysisException / 'cannot resolve', or a Trino SQL / DDL-type error).
-- 'infra' — a missing PROVISIONED RESOURCE: a JVM class / JDBC driver library not attached
-  (ClassNotFoundException), a Databricks secret or scope that 'does not exist' /
-  RESOURCE_DOES_NOT_EXIST, or any other Databricks provisioning/permission failure.
+  NameError / AttributeError / 'cannot resolve', or a Trino SQL / DDL-type error).
+- 'infra' — a missing or misconfigured PROVISIONED RESOURCE: an S3 / IAM AccessDenied, an SSM
+  parameter that resolves to None, a missing Kubernetes object, or any other AWS
+  provisioning/permission failure.
 
 evidence_quote: copy the exact failing line(s) VERBATIM from the log. It MUST contain a real
 error marker (e.g. 'Error:', 'Exception', 'Traceback', 'FAILED', 'does not exist'). Never

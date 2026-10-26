@@ -1,51 +1,53 @@
 """
-Trino federation client.
-Connects to a real Trino coordinator when TRINO_HOST is set;
-falls back to demo mode with realistic sample data otherwise.
+Trino query client for the S3 data lake.
+
+Connects to a real Trino coordinator when TRINO_HOST is set (e.g. after
+`kubectl port-forward svc/trino 8080:8080 -n analytics`); falls back to demo
+mode with realistic sample data otherwise.
 """
 from __future__ import annotations
 import os
 import pandas as pd
 
-# ── Pre-built cross-cloud query shown in UI ─────────────────────────────────
-CROSS_CLOUD_QUERY = """\
--- 🔮 Cross-Cloud Federation Query
--- Joins data from 3 separate cloud catalogs in a single SQL statement
+# ── Pre-built analytical query shown in the UI ──────────────────────────────
+# The eu_sales pipeline writes snappy Parquet to s3://eu-sales-insights-data/processed/
+# partitioned by run_date; sql/setup_trino.sql registers it as an external Hive table.
+# Filtering on the partition column lets Trino prune whole S3 prefixes instead of
+# scanning every file.
+SAMPLE_QUERY = """\
+-- 📊 Daily revenue per currency over the S3 Parquet data lake
+-- Filtering on the partition column (run_date) → Trino reads only those S3 prefixes
 
 SELECT
-    s.customer_id,
-    s.sale_amount,
-    s.sale_date,
-    m.campaign_name,
-    m.campaign_spend,
-    c.customer_tier,
-    c.country
+    run_date,
+    currency,
+    COUNT(*)                          AS orders,
+    SUM(quantity)                     AS units_sold,
+    ROUND(SUM(unit_price * quantity), 2) AS revenue,
+    ROUND(AVG(unit_price), 2)         AS avg_unit_price
 FROM
-    hive.sales.transactions          s    -- ← AWS  (S3 + Hive metastore)
-    JOIN gcp_catalog.marketing.campaigns  m    -- ← GCP  (GCS)
-        ON s.customer_id = m.customer_id
-    JOIN azure_catalog.crm.customers      c    -- ← Azure (ADLS Gen2)
-        ON s.customer_id = c.customer_id
+    hive.sales_eu.pipe_eu_sales_to_s3          -- external table over s3://.../processed/
 WHERE
-    s.sale_date >= DATE '2026-05-01'
-    AND c.customer_tier IN ('Gold', 'Platinum')
+    run_date >= DATE '2026-05-01'              -- partition pruning
+GROUP BY
+    run_date, currency
 ORDER BY
-    s.sale_amount DESC
+    run_date DESC, revenue DESC
 LIMIT 100"""
+
+# Backward-compatible alias (older UI code imported this name).
+CROSS_CLOUD_QUERY = SAMPLE_QUERY
 
 # ── Demo data returned when Trino is not reachable ──────────────────────────
 _DEMO_DF = pd.DataFrame({
-    "customer_id":    [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008],
-    "sale_amount":    [3200.00, 2750.50, 2100.00, 1980.75, 1650.00, 1420.25, 1310.00, 1050.50],
-    "sale_date":      ["2026-05-06", "2026-05-05", "2026-05-06", "2026-05-04",
-                       "2026-05-06", "2026-05-03", "2026-05-05", "2026-05-06"],
-    "campaign_name":  ["spring_promo", "email_vip", "spring_promo", "referral",
-                       "email_vip", "spring_promo", "retargeting", "email_vip"],
-    "campaign_spend": [12000, 8500, 12000, 3200, 8500, 12000, 4100, 8500],
-    "customer_tier":  ["Platinum", "Gold", "Platinum", "Gold",
-                       "Gold", "Platinum", "Gold", "Gold"],
-    "country":        ["DE", "FR", "NL", "IT", "ES", "DE", "BE", "AT"],
-    "data_source":    ["AWS→GCP→Azure"] * 8,
+    "run_date":       ["2026-05-06", "2026-05-06", "2026-05-05", "2026-05-05",
+                       "2026-05-04", "2026-05-04", "2026-05-03", "2026-05-03"],
+    "currency":       ["EUR", "GBP", "EUR", "GBP", "EUR", "GBP", "EUR", "GBP"],
+    "orders":         [742, 118, 701, 131, 688, 104, 659, 97],
+    "units_sold":     [3710, 552, 3466, 619, 3398, 489, 3205, 455],
+    "revenue":        [186_412.50, 27_904.10, 172_380.75, 31_022.40,
+                       168_955.20, 24_610.85, 159_870.00, 22_745.30],
+    "avg_unit_price": [50.24, 50.55, 49.73, 50.12, 49.72, 50.33, 49.88, 49.99],
 })
 
 

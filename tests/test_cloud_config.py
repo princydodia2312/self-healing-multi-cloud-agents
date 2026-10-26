@@ -89,26 +89,16 @@ class TestUseSsmFlag:
         assert called["ssm"] is False
 
 
-class TestNonAwsEnvDirect:
-    """GCP/Azure never touch SSM — they read env vars via _ENV_FALLBACKS."""
+class TestUnsupportedCloud:
+    """Only AWS is supported — any other cloud resolves to None and never touches SSM."""
 
-    def test_gcp_mysql_reads_mysql_db_env(self, monkeypatch):
-        _no_bootstrap(monkeypatch)
-        monkeypatch.setenv("MYSQL_DB_HOST", "gcp-mysql-host")
-        assert cc.cloud_get("gcp", "db_host", db_type="mysql") == "gcp-mysql-host"
-
-    def test_azure_postgres_reads_crm_db_env(self, monkeypatch):
-        _no_bootstrap(monkeypatch)
-        monkeypatch.setenv("CRM_DB_PASSWORD", "azure-secret")
-        assert cc.cloud_get("azure", "db_password", db_type="postgres") == "azure-secret"
-
-    def test_gcp_never_calls_ssm(self, monkeypatch):
+    def test_unknown_cloud_returns_none_without_ssm(self, monkeypatch):
         called = {"ssm": False}
         monkeypatch.setattr(cc, "_try_ssm",
                             lambda c, k: called.__setitem__("ssm", True))
         _no_bootstrap(monkeypatch)
-        monkeypatch.setenv("MYSQL_DB_HOST", "gcp-mysql-host")
-        cc.cloud_get("gcp", "db_host", db_type="mysql")
+        monkeypatch.setenv("POSTGRES_DB_HOST", "pg-host")
+        assert cc.cloud_get("gcp", "db_host") is None
         assert called["ssm"] is False
 
 

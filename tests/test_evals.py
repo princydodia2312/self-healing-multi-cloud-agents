@@ -23,7 +23,7 @@ def test_corpus_deterministic_checks_all_pass():
     assert metrics["evidence_gate"]["failures"] == [], metrics["evidence_gate"]["failures"]
     assert metrics["all_passed"] is True
     # The corpus must be non-trivial (both owners + negatives represented).
-    assert metrics["routing"]["total"] >= 8
+    assert metrics["routing"]["total"] >= 6
     assert metrics["evidence_gate"]["total"] >= metrics["routing"]["total"]
 
 
@@ -82,6 +82,6 @@ def test_heal_verdict():
 
 
 def test_local_kb_retrieval():
-    hit = local_query("databricks secret dbutils spark standard")
+    hit = local_query("trino partition parquet s3 standard")
     assert "OFFICIAL SPEC" in hit
     assert local_query("zzzqqq_no_such_term_anywhere_xyz") == "No relevant guidelines found."

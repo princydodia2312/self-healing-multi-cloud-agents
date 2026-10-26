@@ -1,5 +1,5 @@
 """
-Multi-Cloud Data Engineer Agent — Streamlit UI
+Self-Healing Big Data Pipeline Agent (AWS) — Streamlit UI
 
 Run locally:
     streamlit run streamlit_app.py
@@ -39,7 +39,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Multi-Cloud Data Engineer Agent",
+    page_title="Self-Healing Big Data Pipeline Agent",
     page_icon="🤖",
     layout="wide",
 )
@@ -481,7 +481,7 @@ _NODE_LABELS = {
     "medic":         "🏥 MEDIC",
     "execute_tools": "🔧 TOOLS",
 }
-_CLOUD_FLAGS = {"aws": "🟠 AWS", "azure": "🔵 Azure", "gcp": "🟢 GCP"}
+_CLOUD_FLAGS = {"aws": "🟠 AWS"}
 
 # ---------------------------------------------------------------------------
 # Pipeline visualization helpers
@@ -837,9 +837,8 @@ def _run_agent(pipe_conf, db_conf, rules_conf, infra_conf,
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
         project_id = f"{pipeline_id.upper()}-{timestamp}"
         os.environ["PROJECT_ID"] = project_id
-        # Mirror main.py: agent-runtime cloud_get() resolves creds per CLOUD_PROVIDER, and the
-        # file tools detect Databricks via PIPELINE_PLATFORM (from the infra config provider).
-        # Without these a non-AWS / Databricks NL run silently uses the wrong creds / K8s path.
+        # Mirror main.py: agent-runtime cloud_get() resolves creds per CLOUD_PROVIDER (aws), and the
+        # file tools read the runtime from PIPELINE_PLATFORM (kubernetes on EKS).
         os.environ["CLOUD_PROVIDER"] = pipe_conf.get("cloud_provider", "aws")
         os.environ["PIPELINE_PLATFORM"] = infra_conf.get("provider", "kubernetes").lower()
         # Same PII posture as the CLI: mask sample rows to the LLM + enforce the anonymization gate.
@@ -979,9 +978,6 @@ def _start_run(pipe_conf, db_conf, rules_conf, infra_conf, pipeline_id, task):
 # fails deep inside terraform with a cryptic error. We surface a clear message up front.
 _BOOTSTRAP_REQUIRED_KEYS = {
     "aws":   ("state_bucket", "aws_account_id", "pipeline_irsa_role_name"),
-    "azure": ("state_storage_account", "acr_login_server", "pipeline_managed_identity_name"),
-    "gcp":   ("state_bucket", "artifact_registry_url", "project_id", "pipeline_service_account_email"),
-    "databricks": ("catalog_name", "warehouse_id"),
 }
 
 
@@ -1037,14 +1033,12 @@ st.markdown("""
     -webkit-text-fill-color: transparent;
     background-clip: text;
     letter-spacing: -0.02em;
-  ">🤖 Multi-Cloud Data Engineer Agent</h1>
+  ">🤖 Self-Healing Big Data Pipeline Agent</h1>
 
   <p style="margin:0; color:#94a3b8; font-size:1rem; line-height:1.6;">
-    Describe a pipeline in plain English — the agent designs, deploys, and monitors it across&nbsp;
-    <span style="color:#f97316; font-weight:600;">AWS</span>,&nbsp;
-    <span style="color:#38bdf8; font-weight:600;">Azure</span>, and&nbsp;
-    <span style="color:#4ade80; font-weight:600;">GCP</span> — or as a&nbsp;
-    <span style="color:#ff6b57; font-weight:600;">Databricks</span> lakehouse.
+    Describe a pipeline in plain English — the agents design, deploy, and monitor it on&nbsp;
+    <span style="color:#f97316; font-weight:600;">AWS</span>:
+    PostgreSQL → cleaned Parquet on S3 (partitioned by run_date) → Trino → Grafana.
   </p>
 
   <div style="display:flex; gap:1.5rem; margin-top:1.2rem; flex-wrap:wrap;">
@@ -1057,12 +1051,7 @@ st.markdown("""
       background:rgba(56,189,248,0.12); color:#38bdf8;
       border:1px solid rgba(56,189,248,0.3); border-radius:8px;
       padding:0.25rem 0.8rem; font-size:0.8rem; font-weight:600; letter-spacing:0.05em;
-    ">🔵 Azure AKS + ADLS</span>
-    <span style="
-      background:rgba(74,222,128,0.12); color:#4ade80;
-      border:1px solid rgba(74,222,128,0.3); border-radius:8px;
-      padding:0.25rem 0.8rem; font-size:0.8rem; font-weight:600; letter-spacing:0.05em;
-    ">🟢 GCP GKE + GCS</span>
+    ">🗂️ Parquet + run_date partitions</span>
     <span style="
       background:rgba(129,140,248,0.12); color:#818cf8;
       border:1px solid rgba(129,140,248,0.3); border-radius:8px;
@@ -1072,17 +1061,12 @@ st.markdown("""
       background:rgba(192,132,252,0.12); color:#c084fc;
       border:1px solid rgba(192,132,252,0.3); border-radius:8px;
       padding:0.25rem 0.8rem; font-size:0.8rem; font-weight:600; letter-spacing:0.05em;
-    ">🔮 Trino Federation</span>
+    ">🔮 Trino SQL</span>
     <span style="
       background:rgba(251,191,36,0.12); color:#fbbf24;
       border:1px solid rgba(251,191,36,0.3); border-radius:8px;
       padding:0.25rem 0.8rem; font-size:0.8rem; font-weight:600; letter-spacing:0.05em;
     ">📊 Grafana Dashboards</span>
-    <span style="
-      background:rgba(255,54,33,0.10); color:#ff6b57;
-      border:1px solid rgba(255,54,33,0.28); border-radius:8px;
-      padding:0.25rem 0.8rem; font-size:0.8rem; font-weight:600; letter-spacing:0.05em;
-    ">🧱 Databricks Lakehouse</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -1118,32 +1102,23 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # ── Cloud baseline status (read-only; per-cloud NL-deploy readiness) ─────
-    # The baseline (cluster + registry + state backend + source DB + shared workload identity)
-    # is provisioned ONCE per cloud via `make bootstrap-<cloud>`. An NL deploy needs it ready —
-    # the same check the deploy guard uses (_bootstrap_ready). "Not provisioned" is shown
-    # NEUTRALLY (grey, not red): it's an optional one-time step, not a broken setup. This makes
-    # the prerequisite visible (and the "skip when ready" implicit) without running heavy,
-    # privileged, one-time infra from the demo UI.
-    _bl_flags = {"aws": "🟠", "azure": "🔵", "gcp": "🟢", "databricks": "🧱"}
-    _bl_rows, _any_missing = [], False
-    for _c, _flag in _bl_flags.items():
-        _ready, _ = _bootstrap_ready(_c)
-        _any_missing = _any_missing or not _ready
-        _status = ('<span class="sb-ok">● ready</span>' if _ready
-                   else '<span style="color:#64748b;">○ not provisioned</span>')
-        _bl_rows.append(
-            f'<div class="sb-row"><span class="sb-lbl">{_flag} {_c.upper()}</span>{_status}</div>'
-        )
+    # ── AWS baseline status (read-only; NL-deploy readiness) ─────
+    # The baseline (EKS + ECR + state backend + RDS + shared IRSA role) is provisioned ONCE via
+    # `make bootstrap-aws`. An NL deploy needs it ready — the same check the deploy guard uses
+    # (_bootstrap_ready). "Not provisioned" is shown neutrally: it's a one-time step.
+    _ready, _ = _bootstrap_ready("aws")
+    _status = ('<span class="sb-ok">● ready</span>' if _ready
+               else '<span style="color:#64748b;">○ not provisioned</span>')
     st.markdown(
-        f'<div class="sb-card"><p class="sb-title">Cloud Baseline</p>{"".join(_bl_rows)}</div>',
+        f'<div class="sb-card"><p class="sb-title">AWS Baseline</p>'
+        f'<div class="sb-row"><span class="sb-lbl">🟠 AWS</span>{_status}</div></div>',
         unsafe_allow_html=True,
     )
-    if _any_missing:
+    if not _ready:
         st.markdown(
             '<p style="color:#475569;font-size:0.72rem;margin:0.3rem 0 0;line-height:1.45;">'
-            'One-time per cloud: <code style="color:#7dd3fc;">make bootstrap-&lt;cloud&gt;</code> '
-            '(provisions the baseline + auto-exports). Ready clouds deploy directly.</p>',
+            'One-time: <code style="color:#7dd3fc;">make bootstrap-aws</code> '
+            '(provisions the baseline + auto-exports outputs).</p>',
             unsafe_allow_html=True,
         )
 
@@ -1159,10 +1134,9 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 def _render_arch_report(report: dict):
-    specs  = report.get("specs", {})
-    rec    = report.get("recommendation", "")
-    flags  = {"aws": "🟠 AWS", "azure": "🔵 Azure", "gcp": "🟢 GCP", "databricks": "⚡ Databricks"}
-    colors = {"aws": "#f97316", "azure": "#38bdf8", "gcp": "#4ade80", "databricks": "#FF3621"}
+    specs = report.get("specs", {})
+    opt   = report.get("option") or {}
+    color = "#f97316"
 
     # ── Summary strip ─────────────────────────────────────────
     compliance_str = ", ".join(specs.get("compliance", [])) or "None detected"
@@ -1173,7 +1147,7 @@ def _render_arch_report(report: dict):
         f'border-radius:12px;padding:0.8rem 1.1rem;margin:0.8rem 0;">'
         f'<p style="margin:0;font-size:0.72rem;color:#475569;text-transform:uppercase;'
         f'letter-spacing:0.08em;">Architecture Report</p>'
-        f'<p style="margin:0.2rem 0 0.6rem;color:#e2e8f0;font-weight:600;">{report["summary"]}</p>'
+        f'<p style="margin:0.2rem 0 0.6rem;color:#e2e8f0;font-weight:600;">{report.get("summary", "")}</p>'
         f'<span style="color:#64748b;font-size:0.8rem;">'
         f'📦 ~{specs.get("data_volume_gb_day",50)} GB/day &nbsp;·&nbsp; '
         f'🔄 {specs.get("frequency","daily")} &nbsp;·&nbsp; '
@@ -1183,107 +1157,39 @@ def _render_arch_report(report: dict):
         unsafe_allow_html=True,
     )
 
-    # ── 3 cloud cards (top row) ───────────────────────────────
-    cloud_options = [o for o in report["options"] if o["cloud"] != "databricks"]
-    db_option     = next((o for o in report["options"] if o["cloud"] == "databricks"), None)
+    # ── AWS stack card ────────────────────────────────────────
+    pros_html  = "".join(f'<p class="arch-pro">✓ {p}</p>' for p in opt.get("pros", []))
+    cons_html  = "".join(f'<p class="arch-con">✗ {p}</p>' for p in opt.get("cons", []))
+    items_html = "".join(
+        f'<div style="display:flex;justify-content:space-between;font-size:0.71rem;'
+        f'padding:0.12rem 0;border-bottom:1px solid rgba(255,255,255,0.04);">'
+        f'<span style="color:#475569;">{k}</span>'
+        f'<span style="color:#64748b;">${v:.2f}</span></div>'
+        for k, v in opt.get("items", {}).items()
+    )
+    st.markdown(
+        f'<div class="arch-card arch-card-rec">'
+        f'<p class="arch-cloud-name" style="color:{color};">🟠 AWS — S3 data lake + Trino on EKS</p>'
+        f'<p class="arch-price" style="color:{color};">'
+        f'${opt.get("total", 0):.0f}<span style="font-size:0.8rem;color:#64748b;font-weight:400;">/mo</span></p>'
+        f'<p class="arch-label">{opt.get("label", "")}</p>'
+        f'{pros_html}{cons_html}'
+        f'<details style="margin-top:0.6rem;">'
+        f'<summary style="color:#475569;font-size:0.74rem;cursor:pointer;">Cost breakdown</summary>'
+        f'<div style="margin-top:0.4rem;">{items_html}</div>'
+        f'</details></div>',
+        unsafe_allow_html=True,
+    )
 
-    cols = st.columns(3)
-    for i, opt in enumerate(sorted(cloud_options, key=lambda o: o["cloud"])):
-        cloud    = opt["cloud"]
-        color    = colors[cloud]
-        is_rec   = cloud == rec
-        card_cls = "arch-card arch-card-rec" if is_rec else "arch-card arch-card-plain"
-
-        pros_html  = "".join(f'<p class="arch-pro">✓ {p}</p>' for p in opt["pros"])
-        cons_html  = "".join(f'<p class="arch-con">✗ {p}</p>' for p in opt["cons"])
-        badge      = '<span class="arch-rec-badge">★ Recommended</span><br>' if is_rec else ""
-        items_html = "".join(
-            f'<div style="display:flex;justify-content:space-between;font-size:0.71rem;'
-            f'padding:0.12rem 0;border-bottom:1px solid rgba(255,255,255,0.04);">'
-            f'<span style="color:#475569;">{k}</span>'
-            f'<span style="color:#64748b;">${v:.2f}</span></div>'
-            for k, v in opt["items"].items()
-        )
-        with cols[i]:
-            st.markdown(
-                f'<div class="{card_cls}">{badge}'
-                f'<p class="arch-cloud-name" style="color:{color};">{flags[cloud]}</p>'
-                f'<p class="arch-price" style="color:{color};">'
-                f'${opt["total"]:.0f}<span style="font-size:0.8rem;color:#64748b;font-weight:400;">/mo</span></p>'
-                f'<p class="arch-label">{opt["label"]}</p>'
-                f'{pros_html}{cons_html}'
-                f'<details style="margin-top:0.6rem;">'
-                f'<summary style="color:#475569;font-size:0.74rem;cursor:pointer;">Cost breakdown</summary>'
-                f'<div style="margin-top:0.4rem;">{items_html}</div>'
-                f'</details></div>',
-                unsafe_allow_html=True,
-            )
-
-    # ── Databricks card (full-width enterprise option) ────────
-    if db_option:
-        is_db_rec  = rec == "databricks"
-        db_border  = "2px solid #FF3621" if is_db_rec else "1px solid rgba(255,54,33,0.3)"
-        db_shadow  = "box-shadow:0 0 24px rgba(255,54,33,0.15);" if is_db_rec else ""
-        db_badge   = '<span style="background:rgba(255,54,33,0.15);border:1px solid rgba(255,54,33,0.4);border-radius:6px;color:#FF3621;font-size:0.72rem;font-weight:700;padding:0.1rem 0.5rem;margin-bottom:0.5rem;display:inline-block;">★ Recommended</span><br>' if is_db_rec else ""
-        host       = db_option.get("host_cloud", "azure").upper()
-        when_html  = (f'<p style="margin:0.5rem 0 0;color:#64748b;font-size:0.78rem;font-style:italic;">'
-                      f'💡 {db_option.get("recommended_when","")}</p>') if db_option.get("recommended_when") else ""
-
-        pros_html  = "".join(f'<p class="arch-pro">✓ {p}</p>' for p in db_option["pros"])
-        cons_html  = "".join(f'<p class="arch-con">✗ {p}</p>' for p in db_option["cons"])
-        items_html = "".join(
-            f'<div style="display:flex;justify-content:space-between;font-size:0.71rem;'
-            f'padding:0.12rem 0;border-bottom:1px solid rgba(255,255,255,0.04);">'
-            f'<span style="color:#475569;">{k}</span>'
-            f'<span style="color:#64748b;">${v:.2f}</span></div>'
-            for k, v in db_option["items"].items()
-        )
-
-        st.markdown(
-            f'<div style="background:rgba(20,8,6,0.7);border:{db_border};{db_shadow}'
-            f'border-radius:14px;padding:1rem 1.2rem;margin-top:0.8rem;">'
-            f'{db_badge}'
-            f'<div style="display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap;">'
-            f'<div>'
-            f'<p class="arch-cloud-name" style="color:#FF3621;">⚡ Databricks Lakehouse</p>'
-            f'<p class="arch-price" style="color:#FF3621;">'
-            f'${db_option["total"]:.0f}<span style="font-size:0.8rem;color:#64748b;font-weight:400;">/mo</span></p>'
-            f'<p class="arch-label">Runs on: {host} &nbsp;·&nbsp; Delta Lake + Spark + Unity Catalog + Mosaic AI</p>'
-            f'</div>'
-            f'<div style="flex:1;min-width:200px;">{pros_html}{cons_html}</div>'
-            f'<div style="flex:1;min-width:160px;">'
-            f'<details><summary style="color:#475569;font-size:0.74rem;cursor:pointer;">Cost breakdown</summary>'
-            f'<div style="margin-top:0.4rem;">{items_html}</div></details>'
-            f'</div></div>'
-            f'{when_html}</div>',
-            unsafe_allow_html=True,
-        )
-
-    # ── Recommendation reason ────────────────────────────────
-    if report.get("recommendation_reason"):
-        rec_color = colors.get(rec, "#4ade80")
+    if report.get("fit_reason"):
         st.markdown(
             f'<div style="background:rgba(74,222,128,0.07);border:1px solid rgba(74,222,128,0.2);'
             f'border-radius:10px;padding:0.7rem 1rem;margin-top:0.8rem;">'
-            f'<span style="font-weight:700;color:{rec_color};">💡 Recommendation: {flags.get(rec,rec)}</span>'
+            f'<span style="font-weight:700;color:#4ade80;">💡 How this workload fits</span>'
             f'<p style="margin:0.3rem 0 0;color:#94a3b8;font-size:0.85rem;">'
-            f'{report["recommendation_reason"]}</p></div>',
+            f'{report["fit_reason"]}</p></div>',
             unsafe_allow_html=True,
         )
-
-    # ── Option selection ─────────────────────────────────────
-    all_options = ["aws", "azure", "gcp", "databricks"]
-    st.markdown('<p style="color:#64748b;font-size:0.85rem;margin-top:1rem;">Select option to deploy:</p>',
-                unsafe_allow_html=True)
-    choice = st.radio(
-        "cloud_select",
-        options=all_options,
-        format_func=lambda c: flags[c],
-        index=all_options.index(rec) if rec in all_options else 0,
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-    st.session_state.arch_selected_cloud = choice
 
 
 # ---------------------------------------------------------------------------
@@ -1377,88 +1283,37 @@ def _get_active_rules(key_prefix: str) -> dict | None:
 # COST CHARTS HELPER
 # ---------------------------------------------------------------------------
 
-def _render_cost_charts(size_gb: int = 50, key: str = "cost"):
-    # `key` namespaces the breakdown-selector widget — this function renders in >1 tab and all
-    # tabs execute every run, so a shared widget key would raise DuplicateWidgetID.
-    from utils.cost_estimator import compare_clouds
-    estimates = compare_clouds(storage_gb=size_gb)
-
-    _colors = {"aws": "#f97316", "azure": "#38bdf8", "gcp": "#4ade80", "databricks": "#FF3621"}
-    _labels = {"aws": "🟠 AWS", "azure": "🔵 Azure", "gcp": "🟢 GCP", "databricks": "⚡ Databricks"}
-
-    cheapest     = min(estimates, key=lambda e: e["total"])
-    savings      = round(max(e["total"] for e in estimates) - cheapest["total"], 2)
-
-    # Bar chart
-    bar_df = pd.DataFrame({
-        "Option":   [_labels[e["cloud"]] for e in estimates],
-        "$/month":  [e["total"] for e in estimates],
-    }).set_index("Option")
-    st.bar_chart(bar_df, color="#38bdf8", height=210, use_container_width=True)
-
-    # Summary row — 4 columns
-    cols = st.columns(4)
-    for i, est in enumerate(sorted(estimates, key=lambda e: e["cloud"])):
-        c          = est["cloud"]
-        is_cheapest = c == cheapest["cloud"]
-        color      = _colors[c]
-        badge      = " ✓" if is_cheapest else ""
-        with cols[i]:
-            st.markdown(
-                f'<div style="text-align:center;padding:0.4rem;">'
-                f'<p style="margin:0;font-size:0.68rem;color:#475569;">{_labels[c]}</p>'
-                f'<p style="margin:0;font-size:1.3rem;font-weight:700;color:{color};">'
-                f'${est["total"]:.0f}'
-                f'<span style="font-size:0.7rem;color:#64748b;">/mo</span>'
-                f'<span style="font-size:0.7rem;color:#4ade80;">{badge}</span></p>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
+def _render_cost_items(est: dict):
+    """Itemised AWS cost table + total."""
+    _df = pd.DataFrame([{"Service": k, "$/month": round(v, 2)} for k, v in est["items"].items()])
+    st.dataframe(
+        _df, use_container_width=True, hide_index=True,
+        column_config={"$/month": st.column_config.NumberColumn("$/month", format="$%.2f")},
+    )
     st.markdown(
-        f'<p style="color:#64748b;font-size:0.78rem;margin-top:0.3rem;">'
-        f'💡 Cheapest: <b style="color:#4ade80;">{_labels[cheapest["cloud"]]}</b> — '
-        f'saves <b style="color:#4ade80;">${savings}/mo</b> vs most expensive'
-        f' &nbsp;·&nbsp; {size_gb} GB storage assumed</p>',
+        f'<p style="color:#94a3b8;font-size:0.85rem;margin-top:0.3rem;">'
+        f'Total: <b style="color:#f97316;">${est["total"]:.0f}/mo</b></p>',
         unsafe_allow_html=True,
     )
 
-    # Cost breakdown — pick ANY cloud (defaults to the cheapest).
-    _bd_order  = sorted(estimates, key=lambda e: e["total"])           # cheapest first
-    _bd_labels = [_labels[e["cloud"]] for e in _bd_order]
-    # Keep the breakdown OPEN when the user switches cloud: changing the radio triggers a rerun,
-    # and a hardcoded expanded=False would slam the expander shut. Persist an open flag in
-    # session_state (set by the radio's on_change) so the expander stays open and just swaps clouds.
-    _bd_open_key = f"{key}_bd_open"
-    with st.expander("Cost breakdown — pick a cloud",
-                     expanded=st.session_state.get(_bd_open_key, False)):
-        _pick = st.radio(
-            "Breakdown cloud", _bd_labels, index=0, horizontal=True,
-            label_visibility="collapsed", key=f"{key}_breakdown_pick",
-            on_change=lambda k=_bd_open_key: st.session_state.update({k: True}),
-        )
-        _sel = _bd_order[_bd_labels.index(_pick)]
-        _bd_df = pd.DataFrame(
-            [{"Service": k, "$/month": round(v, 2)} for k, v in _sel["items"].items()]
-        )
-        st.dataframe(
-            _bd_df, use_container_width=True, hide_index=True,
-            column_config={"$/month": st.column_config.NumberColumn("$/month", format="$%.2f")},
-        )
-        st.markdown(
-            f'<p style="color:#94a3b8;font-size:0.85rem;margin-top:0.3rem;">'
-            f'Total: <b style="color:{_colors[_sel["cloud"]]};">${_sel["total"]:.0f}/mo</b>'
-            f'{" ✓ cheapest" if _sel["cloud"] == cheapest["cloud"] else ""}</p>',
-            unsafe_allow_html=True,
-        )
+
+def _render_cost_charts(size_gb: int = 50, key: str = "cost"):
+    # `key` is kept for call-site compatibility (several tabs render this helper).
+    from utils.cost_estimator import estimate_monthly_cost
+    est = estimate_monthly_cost("aws", storage_gb=size_gb)
+
+    bar_df = pd.DataFrame({"Service": list(est["items"]), "$/month": list(est["items"].values())}
+                          ).set_index("Service")
+    st.bar_chart(bar_df, color="#f97316", height=210, use_container_width=True)
+    with st.expander("AWS cost breakdown", expanded=False):
+        _render_cost_items(est)
 
     st.markdown(
         '<p style="color:#475569;font-size:0.78rem;margin:0.6rem 0 0;line-height:1.5;">'
-        '💡 This is the monthly <b>baseline</b> — the shared cluster + source DB + registry, '
-        'provisioned <b>once</b> per cloud — plus this pipeline\'s <b>data storage</b>. It looks '
-        'fixed because the baseline is shared: a second pipeline on the same cloud adds only its '
-        'storage, not another cluster (the GitHub deploy creates just a bucket + a Job on the '
-        'existing cluster). Upload a dataset to see the storage term scale.</p>',
+        f'💡 Monthly <b>baseline</b> (EKS + RDS + ECR, provisioned <b>once</b>) plus this '
+        f'pipeline\'s <b>data storage</b> ({size_gb} GB). A second pipeline adds only its S3 '
+        'storage, not another cluster. <code>make aws-pause</code> stops RDS + EKS nodes between '
+        'demo sessions.</p>',
         unsafe_allow_html=True,
     )
 
@@ -1468,61 +1323,14 @@ def _render_cost_charts(size_gb: int = 50, key: str = "cost"):
 # ---------------------------------------------------------------------------
 
 def _render_cost_panel(selected_cloud: str | None = None):
-    from utils.cost_estimator import PRICES_LAST_UPDATED, compare_clouds
-    estimates = compare_clouds()
-    cheapest  = estimates[0]["cloud"]
-    flags     = {"aws": "🟠 AWS", "azure": "🔵 Azure", "gcp": "🟢 GCP", "databricks": "⚡ Databricks"}
-    colors    = {"aws": "#f97316",  "azure": "#38bdf8",  "gcp": "#4ade80", "databricks": "#FF3621"}
-
-    with st.expander("💰 Estimated monthly infrastructure cost", expanded=False):
-        cols = st.columns(len(estimates))   # compare_clouds() returns 4 (incl. databricks)
-        for i, est in enumerate(sorted(estimates, key=lambda x: x["cloud"])):
-            c   = est["cloud"]
-            col = colors.get(c, "#38bdf8")
-            is_cheapest  = c == cheapest
-            is_selected  = c == selected_cloud
-            # "selected" uses a distinct NEUTRAL bright 2px ring so it NEVER collides with the
-            # cheapest GREEN — a cloud's own brand colour can itself be green (GCP). cheapest stays
-            # green; both can be true at once → thicker ring + both badges.
-            if is_selected:
-                border_css = "2px solid #f1f5f9"
-            elif is_cheapest:
-                border_css = "1px solid #4ade80"
-            else:
-                border_css = "1px solid rgba(56,189,248,0.18)"
-            _badges = []
-            if is_selected:
-                _badges.append('<span style="color:#f1f5f9;">← selected</span>')
-            if is_cheapest:
-                _badges.append('<span style="color:#4ade80;">✓ cheapest</span>')
-            badge_html = " · ".join(_badges)
-
-            with cols[i]:
-                rows_html = "".join(
-                    f'<div style="display:flex;justify-content:space-between;'
-                    f'padding:0.18rem 0;border-bottom:1px solid rgba(255,255,255,0.04);'
-                    f'font-size:0.73rem;">'
-                    f'<span style="color:#64748b;">{k}</span>'
-                    f'<span style="color:#94a3b8;">${v:.2f}</span></div>'
-                    for k, v in est["items"].items()
-                )
-                st.markdown(
-                    f'<div style="background:rgba(10,18,40,0.7);border:{border_css};'
-                    f'border-radius:12px;padding:0.85rem 1rem;">'
-                    f'<p style="margin:0 0 0.1rem;font-size:0.72rem;color:#475569;'
-                    f'text-transform:uppercase;letter-spacing:0.08em;">{flags.get(c, c.upper())}</p>'
-                    f'<p style="margin:0 0 0.6rem;font-size:1.5rem;font-weight:700;color:{col};">'
-                    f'${est["total"]:.0f}<span style="font-size:0.8rem;color:#64748b;">/mo</span>'
-                    f'<span style="font-size:0.72rem;margin-left:0.4rem;">{badge_html}</span></p>'
-                    f'{rows_html}'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
+    from utils.cost_estimator import PRICES_LAST_UPDATED, estimate_monthly_cost
+    est = estimate_monthly_cost("aws")
+    with st.expander("💰 Estimated monthly AWS infrastructure cost", expanded=False):
+        _render_cost_items(est)
         st.markdown(
             '<p style="color:#334155;font-size:0.72rem;margin-top:0.6rem;">'
-            f'* List prices (verified {PRICES_LAST_UPDATED}) · representative regions · fixed bootstrap '
-            f'footprint · 50 GB storage · Databricks compute is usage-billed '
-            f'(assumes ~1h/day jobs + ~20min/day SQL)</p>',
+            f'* AWS list prices (verified {PRICES_LAST_UPDATED}) · eu-central-1 · fixed bootstrap '
+            'footprint · 50 GB storage. Use the AWS Pricing Calculator for real estimates.</p>',
             unsafe_allow_html=True,
         )
 
@@ -1531,72 +1339,30 @@ def _render_cost_panel(selected_cloud: str | None = None):
 # EXECUTION PLAN HELPER — illustrative "what will be created" (no run)
 # ---------------------------------------------------------------------------
 
-# The artifact SET is deterministic per cloud (the architect decides exact contents at run time,
-# but the structure is fixed). NL authoring covers the three object-storage clouds (Option A).
-_EXEC_PLAN_CLOUD = {
-    "aws":   {"store": "S3 bucket",          "fsdriver": "s3fs",
-              "iac": "S3 bucket + IAM role (IRSA) + Glue catalog access",
-              "registry": "ECR", "k8s": "EKS"},
-    "azure": {"store": "ADLS Gen2 container", "fsdriver": "adlfs",
-              "iac": "ADLS container + user-assigned managed identity + role assignment",
-              "registry": "ACR", "k8s": "AKS"},
-    "gcp":   {"store": "GCS bucket",          "fsdriver": "gcsfs",
-              "iac": "GCS bucket + processed/ prefix + Workload Identity SA",
-              "registry": "Artifact Registry", "k8s": "GKE Autopilot"},
-}
-
-
 def _render_execution_plan(cloud: str, pipeline_id: str):
-    """Illustrative pre-deploy plan: the deterministic deliverable set for `cloud`. No agent run."""
-    if cloud == "databricks":
-        # Distinct execution model: Spark + Delta + Unity Catalog — NO Docker/K8s/Grafana/Trino/ECR.
-        groups = [
-            ("Pipeline code", [
-                f"scripts/{pipeline_id}.py — Spark JDBC read → business rules → Delta saveAsTable "
-                "(Unity Catalog) + a _audit Delta table (one row per run)",
-            ]),
-            ("Catalog & observability", [
-                "sql/setup_unity_catalog.sql — Unity Catalog Delta table",
-                f"dashboards/{pipeline_id}_lakeview.json — Databricks Lakeview (AI/BI) dashboard",
-            ]),
-            ("Infrastructure (Terraform)", [
-                "terraform/ — providers · main · variables · outputs · tfvars",
-                "provisions: databricks_secret_scope · databricks_job (Spark task + JDBC driver "
-                "library) · databricks_dashboard (Lakeview)",
-            ]),
-            ("CI/CD", [
-                f".github/workflows/{pipeline_id}_pipeline.yml — upload script to DBFS → "
-                "terraform apply → jobs run-now",
-            ]),
-        ]
-        _extra_note = (" No Docker / Kubernetes / Grafana — the cluster runtime provides Spark + "
-                       "Delta; observability is the Lakeview dashboard.")
-    else:
-        c = _EXEC_PLAN_CLOUD.get(cloud)
-        if not c:
-            return
-        groups = [
-            ("Pipeline code", [
-                f"scripts/{pipeline_id}.py — extract → business rules → parquet → {c['store']}",
-                f"requirements.txt — pandas, pyarrow, {c['fsdriver']}, sqlalchemy, trino, prometheus-client",
-            ]),
-            ("Catalog & observability", [
-                "sql/setup_trino.sql — Trino external table, run_date-partitioned",
-                "dashboards/monitoring_specs.json — Grafana dashboard (5 panels)",
-            ]),
-            ("Kubernetes", [
-                "k8s/ — namespaces · configmaps · trino · grafana · prometheus(+pushgateway) · job",
-                "Dockerfile — pipeline image",
-            ]),
-            ("Infrastructure (Terraform)", [
-                "terraform/ — providers · main · variables · outputs · tfvars",
-                f"provisions: {c['iac']}",
-            ]),
-            ("CI/CD", [
-                f".github/workflows/{pipeline_id}_pipeline.yml — build → {c['registry']} → deploy to {c['k8s']}",
-            ]),
-        ]
-        _extra_note = ""
+    """Illustrative pre-deploy plan: the deterministic AWS deliverable set. No agent run."""
+    groups = [
+        ("Pipeline code (ETL)", [
+            f"scripts/{pipeline_id}.py — extract from RDS → business rules → Parquet (snappy) "
+            "→ S3, partitioned by run_date",
+            "requirements.txt — pandas, pyarrow, s3fs, boto3, sqlalchemy, trino, prometheus-client",
+        ]),
+        ("Catalog & observability", [
+            "sql/setup_trino.sql — Trino external table over S3, run_date-partitioned",
+            "dashboards/monitoring_specs.json — Grafana dashboard (rows processed / rejected, freshness)",
+        ]),
+        ("Kubernetes (EKS)", [
+            "k8s/ — namespaces · configmaps · trino · grafana · prometheus(+pushgateway) · job",
+            "Dockerfile — pipeline image",
+        ]),
+        ("Infrastructure (Terraform)", [
+            "terraform/ — providers · main · variables · outputs · tfvars",
+            "provisions: S3 bucket + IAM role (IRSA) + Glue catalog access",
+        ]),
+        ("CI/CD", [
+            f".github/workflows/{pipeline_id}_pipeline.yml — build → ECR → deploy to EKS",
+        ]),
+    ]
     blocks = ""
     for title, items in groups:
         lis = "".join(f'<li style="margin:0.12rem 0;color:#94a3b8;">{it}</li>' for it in items)
@@ -1610,7 +1376,7 @@ def _render_execution_plan(cloud: str, pipeline_id: str):
         f'border-radius:12px;padding:0.85rem 1.1rem;margin:0.2rem 0 0.7rem;">{blocks}'
         f'<p style="margin:0.55rem 0 0;color:#334155;font-size:0.7rem;">'
         f'Illustrative — the agents generate the exact contents at deploy time. '
-        f'Self-healing (Medic) repairs any CI/CD failure automatically.{_extra_note}</p></div>',
+        f'Self-healing (Medic) repairs any CI/CD failure automatically.</p></div>',
         unsafe_allow_html=True,
     )
 
@@ -1623,7 +1389,7 @@ tab_nl, tab_upload, tab_existing, tab_trino, tab_obs = st.tabs([
     "💬 Natural Language",
     "📁 Upload Dataset",
     "📂 Sample Pipelines",
-    "🔮 Trino Federation",
+    "🔮 Trino SQL",
     "📊 Observability",
 ])
 
@@ -1728,13 +1494,8 @@ with tab_upload:
             # brand-new pipeline on YOUR data, load this sample into the source database as
             # raw_<slug>; then in the wizard set source table = raw_<slug>.
             with st.expander("🔌 Make this your pipeline's source (load into the source DB)", expanded=False):
-                _sd1, _sd2 = st.columns([2, 1])
-                with _sd1:
-                    _seed_slug = st.text_input("Pipeline slug", placeholder="e.g. my_sales",
-                                               key="upload_seed_slug")
-                with _sd2:
-                    _seed_cloud = st.radio("Target cloud", ["aws", "azure", "gcp", "databricks"],
-                                           horizontal=True, key="upload_seed_cloud")
+                _seed_slug = st.text_input("Pipeline slug", placeholder="e.g. my_sales",
+                                           key="upload_seed_slug")
                 if st.button("⬆️ Load sample into source DB", key="upload_seed_btn",
                              type="primary", disabled=not _seed_slug.strip()):
                     with st.spinner("Loading sample into the source database…"):
@@ -1750,13 +1511,11 @@ with tab_upload:
                                 _df = pd.read_json(uploaded_ds)
                             else:
                                 _df = pd.read_csv(uploaded_ds)
-                            _tbl = seed_dataframe_to_source(_df, _seed_slug.strip(), _seed_cloud)
+                            _tbl = seed_dataframe_to_source(_df, _seed_slug.strip(), "aws")
                             st.session_state["nl_seed_table"] = _tbl
-                            _db_label = "mysql" if _seed_cloud == "gcp" else "postgres"
                             st.success(
-                                f"✓ Seeded `{_tbl}` ({len(_df)} rows). In the wizard use "
-                                f"**source table `{_tbl}`**, DB **{_db_label}**, "
-                                f"cloud **{_seed_cloud.upper()}**."
+                                f"✓ Seeded `{_tbl}` ({len(_df)} rows) into the AWS RDS source. "
+                                f"In the wizard use **source table `{_tbl}`**, DB **postgres**."
                             )
                         except Exception as _se:
                             st.error(f"Could not seed the source DB: {_se}")
@@ -1862,7 +1621,7 @@ with tab_nl:
                         "🚫 " + (_intent.get("rejection_reason")
                                  or "This doesn't look like a data-pipeline request. Describe a "
                                     "source table and a cloud destination (e.g. \"Postgres orders "
-                                    "table to GCP daily\").")
+                                    "table to S3 daily as Parquet\").")
                     )
                 else:
                     st.session_state.nl_description     = _desc.strip()
@@ -1926,12 +1685,10 @@ with tab_nl:
                                  placeholder="e.g. raw_orders",
                                  label_visibility="collapsed", key="nl_wizard_f_table")
 
-        _cloud_opts = _FO["target_cloud"]
-        _cloud_pre  = _pre1("target_cloud", "aws")
-        _cloud_idx  = _cloud_opts.index(_cloud_pre) if _cloud_pre in _cloud_opts else 0
         _lbl("Target cloud")
-        _cloud_v = st.radio("cloud", _cloud_opts, index=_cloud_idx, horizontal=True,
-                            label_visibility="collapsed", key="nl_wizard_f_cloud")
+        st.markdown('<p style="color:#f97316;font-weight:600;margin:0;">🟠 AWS (S3 + EKS)</p>',
+                    unsafe_allow_html=True)
+        _cloud_v = "aws"
 
         _freq_opts = _FO["frequency"]
         _freq_pre  = _pre1("frequency", "daily")
@@ -2342,7 +2099,7 @@ with tab_nl:
     elif _nl_step == 3:
         _ans   = st.session_state.nl_answers
         _rules = st.session_state.nl_rules
-        _cf    = {"aws": "🟠 AWS", "azure": "🔵 Azure", "gcp": "🟢 GCP"}
+        _cf    = {"aws": "🟠 AWS"}
         _cloud_label = _cf.get(_ans.get("target_cloud", ""), _ans.get("target_cloud", ""))
 
         # ── Rules section HTML ────────────────────────────────────────────
@@ -2393,11 +2150,9 @@ with tab_nl:
             'Execution plan — what will be created</p>',
             unsafe_allow_html=True,
         )
-        _exec_suffix = {"aws": "s3", "azure": "azure", "gcp": "gcp"}.get(
-            _ans.get("target_cloud", ""), "s3")
         _render_execution_plan(
-            _ans.get("target_cloud", ""),
-            f"pipe_{_ans.get('pipeline_slug', 'pipeline')}_to_{_exec_suffix}",
+            "aws",
+            f"pipe_{_ans.get('pipeline_slug', 'pipeline')}_to_s3",
         )
 
         # ── Cost preview (shown BEFORE the explicit deploy) ───────────────
@@ -2446,51 +2201,6 @@ with tab_nl:
                     del st.session_state[_ck]
                 st.rerun()
 
-        # ── Alternative target: Databricks (lakehouse) ────────────────────────
-        # Databricks is a distinct execution model, so it is NOT a wizard cloud — but the
-        # business intent above is cloud-agnostic, so it can ALSO deploy as a lakehouse with
-        # no extra fields (reuses the same answers + rules via cloud_override="databricks").
-        st.markdown(
-            '<p style="color:#475569;font-size:0.8rem;margin:0.9rem 0 0.3rem;">'
-            'Prefer a lakehouse instead? This runs the <b>same pipeline intent</b> as a '
-            '<b style="color:#ff6b57;">Databricks</b> lakehouse (Spark + Delta + Unity Catalog) — '
-            'a <b>separate</b> deploy, not in addition to the cloud above, no extra fields. '
-            'Needs the Databricks baseline + your sample seeded into its source DB '
-            '(Upload tab → cloud: databricks).</p>',
-            unsafe_allow_html=True,
-        )
-        # Parity with the cloud execution plan above — what the Databricks lakehouse deploy creates.
-        with st.expander("📋 What the Databricks lakehouse deploy creates", expanded=False):
-            _render_execution_plan(
-                "databricks",
-                f"pipe_{_ans.get('pipeline_slug', 'pipeline')}_to_databricks",
-            )
-        _db1, _ = st.columns([1, 2])
-        with _db1:
-            if st.button("⚡ Or: deploy as a Databricks lakehouse instead",
-                         key="nl_wizard_step3_databricks", type="secondary"):
-                _db_ready, _db_why = _bootstrap_ready("databricks")
-                if not _db_ready:
-                    st.error("🚫 " + _db_why)
-                else:
-                    _pc = None
-                    with st.spinner("Building Databricks (lakehouse) configuration…"):
-                        try:
-                            from utils.nlp_parser import _build_from_answers
-                            _pc, _dc, _rc, _ic, _pid, _tk = _build_from_answers(
-                                st.session_state.nl_answers,
-                                st.session_state.nl_rules,
-                                description=st.session_state.nl_description,
-                                cloud_override="databricks",
-                            )
-                        except Exception as _ex:
-                            st.error(f"Could not build Databricks config: {_ex}")
-                    if _pc is not None:
-                        _start_run(_pc, _dc, _rc, _ic, _pid, _tk)
-                        for _rk in [k for k in st.session_state if k.startswith("nl_")]:
-                            del st.session_state[_rk]
-                        st.rerun()
-
     # ════════════════════════════════════════════════════════════════════════
     # STEP 4 — Deploy
     # ════════════════════════════════════════════════════════════════════════
@@ -2500,7 +2210,7 @@ with tab_nl:
             '🚀 Building and launching your pipeline…</p>',
             unsafe_allow_html=True,
         )
-        _deploy_cloud = st.session_state.nl_answers.get("target_cloud", "")
+        _deploy_cloud = st.session_state.nl_answers.get("target_cloud") or "aws"
         _ready, _why = _bootstrap_ready(_deploy_cloud)
         if not _ready:
             st.error("🚫 " + _why)
@@ -2538,7 +2248,7 @@ with tab_nl:
     with st.expander("🔍 Advanced: Architecture Analysis", expanded=False):
         st.markdown(
             '<p style="color:#94a3b8;margin-bottom:0.5rem;">'
-            'Get a full cost comparison across all 3 clouds before deploying.</p>',
+            'See how your workload maps onto the AWS data-lake stack, with a cost estimate.</p>',
             unsafe_allow_html=True,
         )
         _adv_desc = st.text_area(
@@ -2560,22 +2270,21 @@ with tab_nl:
             if not _adv_ok:
                 st.error("🚫 " + (_adv_why or "This doesn't look like a data-pipeline request."))
             else:
-                with st.spinner("Analyzing requirements and costing all 3 clouds…"):
+                with st.spinner("Analyzing requirements and costing the AWS stack…"):
                     from utils.architecture_advisor import analyze
                     st.session_state.arch_report = analyze(_adv_desc)
-                st.session_state.pop("arch_selected_cloud", None)
 
         _adv_report = st.session_state.get("arch_report")
         if _adv_report:
             _render_arch_report(_adv_report)
 
-        _adv_cloud = st.session_state.get("arch_selected_cloud")
+        _adv_cloud = "aws"
         if st.button(
-            f"🚀 Deploy on {_adv_cloud.upper() if _adv_cloud else '…'} (arch pick)",
+            "🚀 Deploy on AWS",
             key="nl_wizard_launch_arch",
             type="primary",
-            disabled=not _adv_cloud,
-        ) and _adv_cloud:
+            disabled=not _adv_report,
+        ):
             _arch_ready, _arch_why = _bootstrap_ready(_adv_cloud)
             if not _arch_ready:
                 st.error("🚫 " + _arch_why)
@@ -2599,46 +2308,36 @@ launch_nl = False
 
 with tab_existing:
     st.markdown(
-        '<p style="color:#94a3b8; margin-bottom:0.5rem;">Run one of four end-to-end pre-built '
-        'reference pipelines — one per cloud. Proven, known-good examples.</p>',
+        '<p style="color:#94a3b8; margin-bottom:0.5rem;">Run the pre-built reference pipeline: '
+        'EU sales orders from RDS PostgreSQL → cleaned Parquet on S3 (partitioned by run_date) '
+        '→ Trino → Grafana.</p>',
         unsafe_allow_html=True,
     )
-    _PIPELINE_CLOUDS = {
-        "eu_sales":         "aws",
-        "us_crm":           "azure",
-        "global_marketing": "gcp",
-        "lakehouse_demo":   "databricks",
-    }
-    _CLOUD_LABELS = {
-        "aws": "🟠 AWS", "azure": "🔵 Azure",
-        "gcp": "🟢 GCP", "databricks": "⚡ Databricks",
-    }
-    existing_choice = st.selectbox("Select a sample pipeline", list(_PIPELINE_CLOUDS.keys()))
-    sel_cloud       = _PIPELINE_CLOUDS[existing_choice]
+    existing_choice = st.selectbox("Select a sample pipeline", ["eu_sales"])
     st.markdown(
-        f'<span style="color:#64748b;font-size:0.85rem;">Target: {_CLOUD_LABELS[sel_cloud]}</span>',
+        '<span style="color:#64748b;font-size:0.85rem;">Target: 🟠 AWS (EKS + S3)</span>',
         unsafe_allow_html=True,
     )
-    _render_cost_panel(selected_cloud=sel_cloud)
+    _render_cost_panel(selected_cloud="aws")
     with st.expander("⚙️ Business Rules", expanded=False):
         _render_rules_selector(key_prefix="ex")
     launch_existing = st.button("▶️ Run Pipeline", type="primary", key="launch_existing")
 
-# ── Trino Federation tab ────────────────────────────────────────────────────
+# ── Trino SQL tab ───────────────────────────────────────────────────────────
 with tab_trino:
-    from utils.trino_client import CROSS_CLOUD_QUERY, run_query
+    from utils.trino_client import SAMPLE_QUERY, run_query
 
     st.markdown(
         '<p style="color:#94a3b8;margin-bottom:0.8rem;">'
-        'Execute a single SQL query that joins data across <b style="color:#f97316;">AWS</b>, '
-        '<b style="color:#38bdf8;">Azure</b>, and <b style="color:#4ade80;">GCP</b> simultaneously '
-        'via Trino federation.</p>',
+        'Query the <b style="color:#f97316;">S3 Parquet data lake</b> with SQL through Trino. '
+        'The table is partitioned by <code>run_date</code>, so date filters only read the '
+        'matching S3 prefixes (partition pruning).</p>',
         unsafe_allow_html=True,
     )
 
     sql_input = st.text_area(
         "SQL",
-        value=CROSS_CLOUD_QUERY,
+        value=SAMPLE_QUERY,
         height=260,
         label_visibility="collapsed",
     )
@@ -2646,7 +2345,7 @@ with tab_trino:
     run_trino = st.button("▶️ Run Query", type="primary", key="run_trino")
 
     if run_trino:
-        with st.spinner("Executing across catalogs…"):
+        with st.spinner("Executing on Trino…"):
             df, is_live = run_query(sql_input)
 
         mode_html = (
@@ -2672,15 +2371,15 @@ with tab_trino:
                 '<p style="margin:0;color:#94a3b8;font-size:0.82rem;">'
                 '💡 To connect a real Trino cluster, add <code style="color:#7dd3fc;">TRINO_HOST=your-host</code> '
                 'to your <code style="color:#7dd3fc;">.env</code>. '
-                'The catalogs <code>hive</code>, <code>gcp_catalog</code>, <code>azure_catalog</code> '
-                'are provisioned by the agent\'s Terraform output.</p>'
+                '(port-forward with <code>kubectl port-forward svc/trino 8080:8080 -n analytics</code>). '
+                'The <code>hive</code> catalog (Glue metastore over S3) is deployed by the agents.</p>'
                 '</div>',
                 unsafe_allow_html=True,
             )
 
 # ── Observability tab ───────────────────────────────────────────────────────
 with tab_obs:
-    from utils.observability import get_pipeline_summary, get_hourly_throughput, get_cloud_breakdown
+    from utils.observability import get_pipeline_summary, get_hourly_throughput, get_partition_breakdown
 
     last_run_id = st.session_state.get("pipeline_meta", {}).get("pipeline_id", "eu-sales-pipeline")
 
@@ -2716,17 +2415,19 @@ with tab_obs:
         height=200,
     )
 
-    st.markdown("##### ☁️ Per-Cloud Performance")
-    cloud_df = get_cloud_breakdown(last_run_id)
+    st.markdown("##### 🗂️ Data-lake partitions (run_date) — rows written vs rejected by the rules")
+    part_df = get_partition_breakdown(last_run_id)
     st.dataframe(
-        cloud_df,
+        part_df,
         use_container_width=True,
         hide_index=True,
         column_config={
-            "cloud":      st.column_config.TextColumn("Cloud"),
-            "avg_ms":     st.column_config.NumberColumn("Avg Latency (ms)", format="%d ms"),
-            "p99_ms":     st.column_config.NumberColumn("p99 Latency (ms)", format="%d ms"),
-            "error_rate": st.column_config.NumberColumn("Error Rate", format="%.3f%%"),
+            "run_date":      st.column_config.TextColumn("Partition (run_date)"),
+            "rows_written":  st.column_config.NumberColumn("Rows written", format="%d"),
+            "rows_rejected": st.column_config.NumberColumn("Rows rejected", format="%d"),
+            "reject_pct":    st.column_config.NumberColumn("Reject %", format="%.2f%%"),
+            "parquet_mb":    st.column_config.NumberColumn("Parquet size (MB)", format="%.1f"),
+            "files":         st.column_config.NumberColumn("Files", format="%d"),
         },
     )
 

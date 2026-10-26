@@ -81,10 +81,10 @@ def _consume_stream(stream) -> str:
                 stream.throw(MissionFailedError(
                     f"mission_status='{mission_status or 'unset'}' — "
                     f"{mission_failure_summary(mission_status)}"
-                    f"\n\n⚠️  COST/CLEANUP: a failed run may have left PAID cloud resources running "
-                    f"(cluster + node groups, DB, LoadBalancer Services, images). Verify and tear down: "
-                    f"run the `destroy.yml` workflow (or `make {{aws,azure,gcp}}-pause`) and confirm no "
-                    f"orphaned LBs/instances remain. See docs/RUNBOOK.md."
+                    f"\n\n⚠️  COST/CLEANUP: a failed run may have left PAID AWS resources running "
+                    f"(EKS node groups, RDS, LoadBalancer Services, ECR images). Verify and tear down: "
+                    f"run `make aws-pause` (or the `destroy.yml` workflow) and confirm no "
+                    f"orphaned LBs/instances remain."
                 ))
     return mission_status
 
@@ -109,15 +109,11 @@ def _launch(pipe_conf, db_conf, rules_conf, infra_conf, pipeline_id, task):
     os.environ["PROJECT_ID"] = unique_project_id
 
     # CLOUD_PROVIDER drives every agent-runtime cloud_get() call (e.g. read_data_schema's
-    # schema introspection). It is read from the pipeline config — NEVER assumed. Without
-    # this, tools default to "aws" and resolve the wrong credential keys on GCP/Azure
-    # (e.g. POSTGRES_DB_HOST instead of CRM_DB_HOST → host "None").
+    # schema introspection). It is read from the pipeline config (always "aws" here).
     os.environ["CLOUD_PROVIDER"] = pipe_conf.get("cloud_provider", "aws")
 
-    # PIPELINE_PLATFORM lets the file tools (write_project_file, validate_generated_code) — which
-    # receive only (filename, content), not the infra config — know this is a Databricks pipeline.
-    # Without it they cannot tell that requirements.txt isn't needed (the LLM emits it empty or
-    # pyspark-only) or that a .json is a Lakeview dashboard. "kubernetes" for the object-storage clouds.
+    # PIPELINE_PLATFORM tells the file tools (write_project_file, validate_generated_code),
+    # which receive only (filename, content), which runtime the pipeline targets ("kubernetes" on EKS).
     os.environ["PIPELINE_PLATFORM"] = infra_conf.get("provider", "kubernetes").lower()
 
     # PII_SENSITIVE lets read_data_schema mask sample rows (no raw PII to the LLM/LangSmith) and lets
@@ -255,7 +251,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("⚠️  Usage:")
         print("  YAML mode : python main.py eu_sales")
-        print('  NL mode   : python main.py "I need daily sales data from PostgreSQL to GCP"')
+        print('  NL mode   : python main.py "I need daily sales data from PostgreSQL to S3 as Parquet"')
         sys.exit(1)
 
     user_input = " ".join(sys.argv[1:])  # supports multi-word args without quotes

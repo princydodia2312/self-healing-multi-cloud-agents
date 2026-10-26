@@ -2,8 +2,7 @@
 Unified configuration loader.
 
 Priority chain (highest → lowest):
-  1. AWS SSM Parameter Store   — AWS only (written by the BOOTSTRAP terraform, not the pipeline
-                                 terraform); skipped entirely for GCP/Azure
+  1. AWS SSM Parameter Store   — written by the BOOTSTRAP terraform (bootstrap/aws/ssm.tf)
   2. .bootstrap_outputs.json   — local dev (populated by scripts/export_bootstrap_outputs.py)
   3. Environment variables      — CI/CD, Docker, or last resort
 
@@ -12,11 +11,9 @@ Convention for SSM parameter names:
   e.g.  /multi-cloud-self-healing-agent/aws/db_host
 
 Keys are GENERIC and DB-engine-agnostic: db_host, db_port, db_user, db_password, db_name.
-The same API works for any combination of cloud provider and database engine:
 
-    cloud_get("aws",   "db_host")   # PostgreSQL or MySQL on AWS RDS
-    cloud_get("gcp",   "db_host")   # PostgreSQL or MySQL on GCP Cloud SQL
-    cloud_get("azure", "db_host")   # PostgreSQL or MySQL on Azure Database
+    cloud_get("aws", "db_host")                   # PostgreSQL on AWS RDS (default)
+    cloud_get("aws", "db_host", db_type="mysql")  # MySQL source
 
 For the env-var fallback (tier 3), the (cloud, db_type, key) triple selects exactly ONE
 env-var name from _ENV_FALLBACKS, so postgres and mysql credentials are never mixed up.
@@ -46,11 +43,8 @@ _SSM_PREFIX = "/multi-cloud-self-healing-agent"
 # by passing db_type to cloud_get() — see below.
 #
 # Convention:
-#   postgres on AWS                 → POSTGRES_DB_*
-#   postgres on Azure (us_crm)      → CRM_DB_*    (matches bootstrap/azure outputs,
-#                                                  cicd_standards secret keys, seed_chaos.py)
-#   mysql on GCP                    → MYSQL_DB_*
-#   mysql on AWS/Azure              → MYSQL_DB_*   (via db_type="mysql")
+#   postgres on AWS (eu_sales)      → POSTGRES_DB_*
+#   mysql on AWS                    → MYSQL_DB_*   (via db_type="mysql")
 _ENV_FALLBACKS: dict[tuple[str, str, str], str] = {
     # ── AWS ──────────────────────────────────────────────────────────────────
     ("aws", "postgres", "db_host"):     "POSTGRES_DB_HOST",
@@ -63,30 +57,6 @@ _ENV_FALLBACKS: dict[tuple[str, str, str], str] = {
     ("aws", "mysql",    "db_user"):     "MYSQL_DB_USER",
     ("aws", "mysql",    "db_password"): "MYSQL_DB_PASSWORD",
     ("aws", "mysql",    "db_name"):     "MYSQL_DB_NAME",
-    # ── GCP ──────────────────────────────────────────────────────────────────
-    ("gcp", "postgres", "db_host"):     "POSTGRES_DB_HOST",
-    ("gcp", "postgres", "db_port"):     "POSTGRES_DB_PORT",
-    ("gcp", "postgres", "db_user"):     "POSTGRES_DB_USER",
-    ("gcp", "postgres", "db_password"): "POSTGRES_DB_PASSWORD",
-    ("gcp", "postgres", "db_name"):     "POSTGRES_DB_NAME",
-    ("gcp", "mysql",    "db_host"):     "MYSQL_DB_HOST",
-    ("gcp", "mysql",    "db_port"):     "MYSQL_DB_PORT",
-    ("gcp", "mysql",    "db_user"):     "MYSQL_DB_USER",
-    ("gcp", "mysql",    "db_password"): "MYSQL_DB_PASSWORD",
-    ("gcp", "mysql",    "db_name"):     "MYSQL_DB_NAME",
-    # ── Azure ─────────────────────────────────────────────────────────────────
-    # Azure has no SSM; the K8s secret is populated from GitHub vars/secrets under the
-    # CRM_DB_* names (see bootstrap/azure/outputs.tf, cicd_standards.md, seed_chaos.py).
-    ("azure", "postgres", "db_host"):     "CRM_DB_HOST",
-    ("azure", "postgres", "db_port"):     "CRM_DB_PORT",
-    ("azure", "postgres", "db_user"):     "CRM_DB_USER",
-    ("azure", "postgres", "db_password"): "CRM_DB_PASSWORD",
-    ("azure", "postgres", "db_name"):     "CRM_DB_NAME",
-    ("azure", "mysql",    "db_host"):     "MYSQL_DB_HOST",
-    ("azure", "mysql",    "db_port"):     "MYSQL_DB_PORT",
-    ("azure", "mysql",    "db_user"):     "MYSQL_DB_USER",
-    ("azure", "mysql",    "db_password"): "MYSQL_DB_PASSWORD",
-    ("azure", "mysql",    "db_name"):     "MYSQL_DB_NAME",
 }
 
 # ── Backward-compatibility ────────────────────────────────────────────────────
@@ -102,17 +72,13 @@ _LEGACY_KEY_MAP: dict[str, str] = {
 }
 
 # SSM parameter name candidates for each generic key, tried in order.
-# Allows reading params written under other naming conventions without migrating them:
-#   - rds_*          : the AWS eu_sales bootstrap (legacy names).
-#   - lakehouse_db_* : the Databricks bootstrap's self-contained source RDS (distinct names so
-#                      they don't collide with eu_sales in the shared /aws/ namespace). Listed
-#                      LAST so eu_sales (rds_*) still wins when both happen to be present.
+# rds_* are the names the AWS eu_sales bootstrap writes (bootstrap/aws/ssm.tf).
 _SSM_KEY_CANDIDATES: dict[str, list[str]] = {
-    "db_host":     ["db_host",     "rds_host",     "lakehouse_db_host"],
-    "db_port":     ["db_port",     "rds_port",     "lakehouse_db_port"],
-    "db_user":     ["db_user",     "rds_username", "lakehouse_db_user"],
-    "db_password": ["db_password", "rds_password", "lakehouse_db_password"],
-    "db_name":     ["db_name",     "rds_db_name",  "lakehouse_db_name"],
+    "db_host":     ["db_host",     "rds_host"],
+    "db_port":     ["db_port",     "rds_port"],
+    "db_user":     ["db_user",     "rds_username"],
+    "db_password": ["db_password", "rds_password"],
+    "db_name":     ["db_name",     "rds_db_name"],
 }
 
 
@@ -163,7 +129,7 @@ def cloud_get(cloud: str, key: str, db_type: str = "postgres", *, use_ssm: bool 
     Retrieve a config value using the three-tier priority chain.
 
     Args:
-        cloud:    "aws" | "gcp" | "azure"
+        cloud:    "aws"
         key:      Generic key — db_host | db_port | db_user | db_password | db_name.
                   Legacy RDS-specific keys (rds_host, rds_username, rds_db_name) are
                   transparently resolved via _LEGACY_KEY_MAP for backward compatibility.

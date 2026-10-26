@@ -1,13 +1,10 @@
 """
-Reads terraform outputs from each bootstrap directory and merges them into
-a single .bootstrap_outputs.json file at the project root.
+Reads `terraform output -json` from bootstrap/aws and writes the values into
+.bootstrap_outputs.json at the project root (the local-dev tier of utils/cloud_config).
 
-Run this ONCE after each `terraform apply` in bootstrap/:
+Run this ONCE after `terraform apply` in bootstrap/aws (make bootstrap-aws does it):
 
-    python scripts/export_bootstrap_outputs.py        # all clouds
-    python scripts/export_bootstrap_outputs.py aws    # single cloud
-    python scripts/export_bootstrap_outputs.py azure
-    python scripts/export_bootstrap_outputs.py gcp
+    python scripts/export_bootstrap_outputs.py aws
 """
 
 import json
@@ -81,83 +78,8 @@ def _normalize_aws(raw: dict) -> dict:
     return out
 
 
-def _normalize_azure(raw: dict) -> dict:
-    out = {}
-    if v := raw.get("acr_login_server"):
-        out["acr_login_server"] = v
-    if v := raw.get("aks_cluster_name"):
-        out["aks_cluster_name"] = v
-    if v := raw.get("aks_oidc_issuer_url"):
-        out["aks_oidc_issuer_url"] = v
-    if v := raw.get("crm_managed_identity_client_id"):
-        out["managed_identity_client_id"] = v
-    # NL/Streamlit-authored pipelines: the shared managed identity they federate to.
-    if v := raw.get("pipeline_managed_identity_name"):
-        out["pipeline_managed_identity_name"] = v
-    if v := raw.get("pipeline_managed_identity_client_id"):
-        out["pipeline_managed_identity_client_id"] = v
-    if v := raw.get("tfstate_storage_account"):
-        out["state_storage_account"] = v
-    if v := raw.get("tfstate_container_name"):
-        out["state_container"] = v
-    if v := raw.get("resource_group_name"):
-        out["resource_group_name"] = v
-    for k in ("db_host", "db_port", "db_name"):
-        if v := raw.get(k):
-            out[k] = v
-    # The azure bootstrap output is named `db_username`, but on azure cloud_get has no
-    # SSM tier and resolves the GENERIC key `db_user` from this bridge file. Emit
-    # `db_user` so a local NL deploy resolves the username from the bridge (only the
-    # password must come from env). Keep `db_username` too (additive — no other reader breaks).
-    if v := raw.get("db_username"):
-        out["db_user"] = v
-        out["db_username"] = v
-    return out
-
-
-def _normalize_gcp(raw: dict) -> dict:
-    out = {}
-    if v := raw.get("artifact_registry_url"):
-        out["artifact_registry_url"] = v
-    if v := raw.get("gke_cluster_name"):
-        out["gke_cluster_name"] = v
-    if v := raw.get("marketing_service_account_email"):
-        out["service_account_email"] = v
-    # NL/Streamlit-authored pipelines: the shared SA they impersonate via Workload Identity.
-    if v := raw.get("pipeline_service_account_email"):
-        out["pipeline_service_account_email"] = v
-    if v := raw.get("pipeline_service_account_id"):
-        out["pipeline_service_account_id"] = v
-    if v := raw.get("tfstate_bucket_name"):
-        out["state_bucket"] = v
-    if v := raw.get("project_id"):
-        out["project_id"] = v
-    if v := raw.get("region"):
-        out["region"] = v
-    wp = raw.get("workload_identity_provider", "")
-    if wp and wp != "not configured":
-        out["workload_identity_provider"] = wp
-    for k in ("db_host", "db_port", "db_name", "db_user"):
-        if v := raw.get(k):
-            out[k] = v
-    return out
-
-
-def _normalize_databricks(raw: dict) -> dict:
-    out = {}
-    # NL-authored Databricks pipelines derive UC catalog + warehouse + source endpoint from these.
-    for k in ("workspace_url", "workspace_id", "cluster_id",
-              "warehouse_id", "catalog_name", "source_db_endpoint"):
-        if v := raw.get(k):
-            out[k] = v
-    return out
-
-
 _NORMALIZERS = {
     "aws": _normalize_aws,
-    "azure": _normalize_azure,
-    "gcp": _normalize_gcp,
-    "databricks": _normalize_databricks,
 }
 
 
@@ -191,7 +113,8 @@ def export(clouds: list):
 
 
 if __name__ == "__main__":
-    all_clouds = ["aws", "azure", "gcp", "databricks"]
-    target = sys.argv[1].lower() if len(sys.argv) > 1 else "all"
-    clouds = all_clouds if target == "all" else [target]
-    export(clouds)
+    # AWS is the only supported cloud; the optional arg is kept for `make bootstrap-aws`.
+    target = sys.argv[1].lower() if len(sys.argv) > 1 else "aws"
+    if target not in _NORMALIZERS:
+        sys.exit(f"Unsupported cloud {target!r} — only 'aws' is supported.")
+    export([target])

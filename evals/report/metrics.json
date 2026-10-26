@@ -1,47 +1,23 @@
 {
-  "corpus_cases": 17,
+  "corpus_cases": 10,
   "routing": {
-    "total": 14,
-    "correct": 14,
+    "total": 7,
+    "correct": 7,
     "accuracy_pct": 100.0,
     "failures": []
   },
   "evidence_gate": {
-    "total": 17,
-    "correct": 17,
+    "total": 10,
+    "correct": 10,
     "accuracy_pct": 100.0,
     "failures": []
   },
   "by_failure_class": {
     "infra:cloud-iam": {
-      "routing_total": 4,
-      "routing_correct": 4,
-      "gate_total": 4,
-      "gate_correct": 4
-    },
-    "infra:databricks-context-fallback": {
-      "routing_total": 1,
-      "routing_correct": 1,
-      "gate_total": 1,
-      "gate_correct": 1
-    },
-    "infra:missing-library": {
-      "routing_total": 1,
-      "routing_correct": 1,
-      "gate_total": 1,
-      "gate_correct": 1
-    },
-    "infra:resource-not-found": {
-      "routing_total": 1,
-      "routing_correct": 1,
-      "gate_total": 1,
-      "gate_correct": 1
-    },
-    "infra:secret-not-found": {
-      "routing_total": 1,
-      "routing_correct": 1,
-      "gate_total": 1,
-      "gate_correct": 1
+      "routing_total": 2,
+      "routing_correct": 2,
+      "gate_total": 2,
+      "gate_correct": 2
     },
     "negative:clean": {
       "routing_total": 0,
@@ -58,12 +34,6 @@
     "negative:speculation": {
       "routing_total": 0,
       "routing_correct": 0,
-      "gate_total": 1,
-      "gate_correct": 1
-    },
-    "script-logic:AnalysisException": {
-      "routing_total": 1,
-      "routing_correct": 1,
       "gate_total": 1,
       "gate_correct": 1
     },
