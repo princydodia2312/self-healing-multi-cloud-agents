@@ -3,48 +3,25 @@ PYTHON = uv run python
 APP = main.py
 SCRIPTS_DIR = scripts
 
-# --- Commands ---
+## Single source of truth for dependencies: pyproject.toml
+## Before running: cp .env.example .env  (then fill in your credentials)
 
-.PHONY: streamlit ui
-streamlit ui: ## Launch the NL/demo Streamlit app (dark theme, file-watcher off) → http://localhost:8501
-	uv run streamlit run streamlit_app.py --server.fileWatcherType none
+# --- Setup ---
+
+.PHONY: install
+install: ## Install all dependencies using uv
+	@echo "Installing dependencies..."
+	uv sync
+
+# --- AWS baseline infrastructure (one-time) ---
 
 .PHONY: bootstrap-aws
-bootstrap-aws: ## Provision baseline AWS infrastructure (EKS + RDS + S3 + ECR)
+bootstrap-aws: ## Provision baseline AWS infrastructure (EKS + RDS + S3 + ECR + SSM)
 	@echo "Provisioning AWS baseline infrastructure..."
 	terraform -chdir=bootstrap/aws init
 	terraform -chdir=bootstrap/aws apply
-	@echo "Exporting bootstrap outputs -> .bootstrap_outputs.json (bridge for the NL/Streamlit deploy path)..."
+	@echo "Exporting bootstrap outputs -> .bootstrap_outputs.json (used by the NL/Streamlit deploy path)..."
 	$(PYTHON) scripts/export_bootstrap_outputs.py aws
-
-.PHONY: bootstrap-azure
-bootstrap-azure: ## Provision baseline Azure infrastructure (AKS + PostgreSQL + ACR)
-	@echo "Provisioning Azure baseline infrastructure..."
-	terraform -chdir=bootstrap/azure init
-	@# Restrict the Postgres firewall to THIS operator's public IP instead of the
-	@# 0.0.0.0/0 allow-all fallback (db_allowed_cidrs default []). Auto-detected so a
-	@# cloner gets a hardened, IP-scoped DB with no manual `az` step. Override by
-	@# exporting TF_VAR_db_allowed_cidrs yourself (e.g. a fixed office CIDR).
-	TF_VAR_db_allowed_cidrs="$${TF_VAR_db_allowed_cidrs:-[\"$$(curl -s ifconfig.me)/32\"]}" \
-		terraform -chdir=bootstrap/azure apply
-	@echo "Exporting bootstrap outputs -> .bootstrap_outputs.json (bridge for the NL/Streamlit deploy path)..."
-	$(PYTHON) scripts/export_bootstrap_outputs.py azure
-
-.PHONY: bootstrap-gcp
-bootstrap-gcp: ## Provision baseline GCP infrastructure (GKE + Cloud SQL + AR)
-	@echo "Provisioning GCP baseline infrastructure..."
-	terraform -chdir=bootstrap/gcp init
-	terraform -chdir=bootstrap/gcp apply
-	@echo "Exporting bootstrap outputs -> .bootstrap_outputs.json (bridge for the NL/Streamlit deploy path)..."
-	$(PYTHON) scripts/export_bootstrap_outputs.py gcp
-
-.PHONY: bootstrap-databricks
-bootstrap-databricks: ## Provision baseline Databricks infrastructure (workspace + Unity Catalog + jobs cluster + SQL warehouse + source RDS)
-	@echo "Provisioning Databricks baseline infrastructure..."
-	terraform -chdir=bootstrap/databricks init
-	terraform -chdir=bootstrap/databricks apply
-	@echo "Exporting bootstrap outputs -> .bootstrap_outputs.json (bridge for the NL/Streamlit deploy path)..."
-	$(PYTHON) scripts/export_bootstrap_outputs.py databricks
 
 .PHONY: destroy-aws
 destroy-aws: ## DANGER: Tear down all baseline AWS infrastructure
@@ -52,41 +29,8 @@ destroy-aws: ## DANGER: Tear down all baseline AWS infrastructure
 	terraform -chdir=bootstrap/aws init
 	terraform -chdir=bootstrap/aws destroy
 
-.PHONY: destroy-azure
-destroy-azure: ## DANGER: Tear down all baseline Azure infrastructure
-	@echo "Destroying baseline Azure infrastructure..."
-	terraform -chdir=bootstrap/azure init
-	terraform -chdir=bootstrap/azure destroy
-
-.PHONY: destroy-gcp
-destroy-gcp: ## DANGER: Tear down all baseline GCP infrastructure
-	@echo "Destroying baseline GCP infrastructure..."
-	terraform -chdir=bootstrap/gcp init
-	terraform -chdir=bootstrap/gcp destroy
-
-.PHONY: destroy-databricks
-destroy-databricks: ## DANGER: Databricks teardown — use the destroy.yml workflow (two-phase: force_destroy/force_update flags, then destroy)
-	@echo "Databricks teardown is a TWO-PHASE process (runtime-created managed tables need"
-	@echo "force_destroy/force_update flags applied into state before terraform destroy)."
-	@echo "Use the supported path: GitHub Actions → destroy.yml → cloud: databricks"
-	@exit 1
-
-## Single source of truth: pyproject.toml
-## Before running: cp .env.example .env  (then fill in your credentials)
-.PHONY: azure-pause
-azure-pause: ## Stop AKS + Postgres to cut cost between sessions (keeps everything)
-	@bash bootstrap/azure/power.sh pause
-
-.PHONY: azure-resume
-azure-resume: ## Start AKS + Postgres to resume work
-	@bash bootstrap/azure/power.sh resume
-
-.PHONY: azure-status
-azure-status: ## Show Azure baseline power state (AKS + Postgres)
-	@bash bootstrap/azure/power.sh status
-
 .PHONY: aws-pause
-aws-pause: ## Stop RDS + EKS nodes to cut cost between sessions (keeps everything)
+aws-pause: ## Stop RDS + scale EKS nodes to 0 to cut cost between sessions (keeps everything)
 	@bash bootstrap/aws/power.sh pause
 
 .PHONY: aws-resume
@@ -97,119 +41,76 @@ aws-resume: ## Start RDS + EKS nodes to resume work
 aws-status: ## Show AWS baseline power state (RDS + EKS node groups)
 	@bash bootstrap/aws/power.sh status
 
-.PHONY: gcp-pause
-gcp-pause: ## Stop Cloud SQL + scale GKE workloads to 0 to cut cost (keeps everything)
-	@bash bootstrap/gcp/power.sh pause
+.PHONY: cost
+cost: ## Print the monthly AWS baseline cost estimate (deterministic list prices)
+	$(PYTHON) -m utils.cost_estimator
 
-.PHONY: gcp-resume
-gcp-resume: ## Start Cloud SQL + scale GKE workloads back up
-	@bash bootstrap/gcp/power.sh resume
-
-.PHONY: gcp-status
-gcp-status: ## Show GCP baseline power state (Cloud SQL + GKE workloads)
-	@bash bootstrap/gcp/power.sh status
-
-.PHONY: install
-install: ## Install all dependencies using uv
-	@echo "Installing dependencies..."
-	uv sync
+# --- Pipeline demo ---
 
 .PHONY: ingest
-ingest: ## Sync Knowledge Base standards (all 4 providers) to Pinecone
-	@echo "Syncing Global Standards to Pinecone..."
+ingest: ## Sync the Knowledge Base (engineering standards) to Pinecone for RAG
+	@echo "Syncing standards to Pinecone..."
 	$(PYTHON) $(SCRIPTS_DIR)/ingest_to_pinecone.py --path knowledge_base
 
 .PHONY: chaos
-chaos: ## Seed dirty data. Usage: make chaos target=eu_sales db_type=postgres rows=100
-	@$(if $(target),,$(error Error: target is undefined. Usage: make chaos target=eu_sales))
-	@echo "Seeding chaos into $(target) (db_type=$(db_type))..."
-	$(PYTHON) $(SCRIPTS_DIR)/seed_chaos.py --target $(target) --db-type $(if $(db_type),$(db_type),postgres) --rows $(if $(rows),$(rows),100)
+chaos: ## Seed dirty data into the source DB. Usage: make chaos [db_type=postgres|sqlite] [rows=100]
+	@echo "Seeding chaos into eu_sales (db_type=$(if $(db_type),$(db_type),postgres))..."
+	$(PYTHON) $(SCRIPTS_DIR)/seed_chaos.py --target eu_sales --db-type $(if $(db_type),$(db_type),postgres) --rows $(if $(rows),$(rows),100)
 
 .PHONY: run
-run: ## Run the Self-Healing Agent. Usage: make run p=eu_sales
-	@$(if $(p),,$(error Error: p is undefined. Usage: make run p=eu_sales))
-	@echo "Starting Multi-Cloud Self-Healing Agent for: $(p)..."
-	$(PYTHON) $(APP) $(p)
+run: ## Run the Self-Healing Agent. Usage: make run [p=eu_sales]
+	@echo "Starting Self-Healing Agent for: $(if $(p),$(p),eu_sales)..."
+	$(PYTHON) $(APP) $(if $(p),$(p),eu_sales)
 
-.PHONY: run-all
-run-all: ## Run all four pipelines sequentially (AWS, Azure, GCP, Databricks)
-	@make run p=eu_sales
-	@make run p=us_crm
-	@make run p=global_marketing
-	@make run p=sales_lakehouse
-
-.PHONY: demo-aws
-demo-aws: ## Full AWS demo: ingest + chaos + run eu_sales
+.PHONY: demo
+demo: ## Full AWS demo: ingest standards + seed chaos + run eu_sales
 	@make ingest
-	@make chaos target=eu_sales db_type=postgres rows=100
+	@make chaos
 	@make run p=eu_sales
 
-.PHONY: demo-azure
-demo-azure: ## Full Azure demo: ingest + chaos + run us_crm
-	@make ingest
-	@make chaos target=us_crm db_type=postgres rows=100
-	@make run p=us_crm
+.PHONY: streamlit ui
+streamlit ui: ## Launch the Streamlit UI → http://localhost:8501
+	uv run streamlit run streamlit_app.py --server.fileWatcherType none
 
-.PHONY: demo-gcp
-demo-gcp: ## Full GCP demo: ingest + chaos + run global_marketing
-	@make ingest
-	@make chaos target=global_marketing db_type=mysql rows=100
-	@make run p=global_marketing
-
-.PHONY: demo-databricks
-demo-databricks: ## Full Databricks demo: ingest + chaos + run sales_lakehouse
-	@make ingest
-	@make chaos target=sales_lakehouse db_type=postgres rows=100
-	@make run p=sales_lakehouse
+# --- Quality ---
 
 .PHONY: test
-test: ## Run the full test suite
+test: ## Run the test suite
 	uv run pytest tests/ -v --tb=short
-
-.PHONY: eval-replay
-eval-replay: ## Medic self-heal eval (OFFLINE replay — no cloud/LLM/creds): score the failure corpus, regenerate evals/report/
-	$(PYTHON) -m evals.harness.runner
-
-.PHONY: eval-check
-eval-check: ## CI parity: fail if evals/report is stale OR the deterministic routing/gate regressed vs the corpus
-	$(PYTHON) -m evals.harness.runner --check
-	$(PYTHON) -m evals.harness.runner --gate
-
-.PHONY: eval-live
-eval-live: ## Medic diagnosis eval (LIVE — needs an LLM key): score the current model's routing + evidence grounding. Override with model=<id>
-	$(PYTHON) -m evals.harness.eval_live $(if $(model),--model $(model),)
-
-.PHONY: heal
-heal: ## Route + validate ANY failing CI log through the real Medic logic (offline). Usage: make heal LOG=run.log
-	@$(if $(LOG),,$(error Error: LOG is undefined. Usage: make heal LOG=run.log))
-	$(PYTHON) -m evals.heal --log $(LOG)
-
-.PHONY: cost
-cost: ## Print the per-cloud monthly bootstrap-footprint estimate (deterministic list prices)
-	$(PYTHON) -m utils.cost_estimator
-
-.PHONY: security-gate
-security-gate: ## Security gate over the LIVE generated bundle (k8s/, Dockerfile, .github/workflows/pipe_*)
-	$(PYTHON) -m policy.security_analyzer .
-
-.PHONY: gate-proof
-gate-proof: ## Prove the security gate REFUSES the unsafe fixtures + PASSES the clean v1.0.0 goldens
-	$(PYTHON) -m pytest tests/test_security_gate.py -v
-
-.PHONY: opa
-opa: ## Cross-check the gate with the Rego second engine (needs conftest; no-op if absent)
-	@command -v conftest >/dev/null 2>&1 || { echo "conftest not installed — the Python gate is the enforced control (make gate-proof)"; exit 0; }
-	$(PYTHON) -c "import json; from policy.security_analyzer import analyze; json.dump(analyze('tests/goldens/v1.0.0')['context'], open('.gate_ctx.json','w'))"
-	conftest test .gate_ctx.json --policy policy/opa; rm -f .gate_ctx.json
-
-.PHONY: format
-format: ## Autofix lint findings with ruff (generated pipe_*.py excluded via pyproject)
-	@echo "Fixing lint findings..."
-	uv run ruff check --fix .
 
 .PHONY: lint
 lint: ## Lint the whole repo with ruff (same command CI runs)
 	uv run ruff check .
+
+.PHONY: format
+format: ## Autofix lint findings with ruff
+	uv run ruff check --fix .
+
+.PHONY: eval-replay
+eval-replay: ## Self-heal eval (OFFLINE — no cloud/LLM): score the failure corpus, regenerate evals/report/
+	$(PYTHON) -m evals.harness.runner
+
+.PHONY: eval-check
+eval-check: ## CI parity: fail if evals/report is stale OR routing/evidence-gate regressed vs the corpus
+	$(PYTHON) -m evals.harness.runner --check
+	$(PYTHON) -m evals.harness.runner --gate
+
+.PHONY: eval-live
+eval-live: ## Medic diagnosis eval (LIVE — needs an LLM key). Override with model=<id>
+	$(PYTHON) -m evals.harness.eval_live $(if $(model),--model $(model),)
+
+.PHONY: heal
+heal: ## Route + validate a failing CI log through the real Medic logic (offline). Usage: make heal LOG=run.log
+	@$(if $(LOG),,$(error Error: LOG is undefined. Usage: make heal LOG=run.log))
+	$(PYTHON) -m evals.heal --log $(LOG)
+
+.PHONY: security-gate
+security-gate: ## Security gate over the generated bundle (k8s/, Dockerfile, .github/workflows/pipe_*)
+	$(PYTHON) -m policy.security_analyzer .
+
+.PHONY: gate-proof
+gate-proof: ## Prove the security gate REFUSES the unsafe fixtures + PASSES the clean AWS goldens
+	$(PYTHON) -m pytest tests/test_security_gate.py -v
 
 .PHONY: clean
 clean: ## Remove temporary files and caches

@@ -1,7 +1,7 @@
 [project]
 name = "multi-cloud-self-healing-agent"
 version = "1.0.0"
-description = "Cloud-agnostic self-healing data engineering agent supporting AWS, Azure, GCP, and Databricks"
+description = "Self-healing multi-agent Big Data pipeline on AWS (PostgreSQL -> Parquet on S3 -> Trino -> Grafana)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -21,13 +21,6 @@ dependencies = [
     "python-terraform>=0.10.1",
     "pyyaml>=6.0.3",
     "sqlalchemy>=2.0.49",
-    # Azure SDK
-    "azure-storage-blob>=12.22.0",
-    "azure-identity>=1.16.0",
-    "adlfs>=2024.2.0",
-    # GCP SDK
-    "google-cloud-storage>=2.16.0",
-    "gcsfs>=2024.2.0",
     # Parquet & storage
     "pyarrow>=16.0.0",
     "s3fs>=2024.3.0",
@@ -37,7 +30,7 @@ dependencies = [
     "trino>=0.328.0",
     # Prometheus metrics
     "prometheus-client>=0.20.0",
-    # MySQL driver for GCP Cloud SQL
+    # MySQL driver (optional MySQL source; eu_sales uses PostgreSQL)
     "pymysql>=1.1.1",
     # The tokenizer for the embed model (cl100k_base) — a DIRECT dep so the KB token-budget guard
     # (utils/embedding_budget) always counts accurately instead of falling back to a chars/4 estimate
@@ -61,11 +54,10 @@ dev = [
 ]
 
 [tool.uv]
-# The project never runs on Windows (CI = ubuntu, local dev = macOS, pipeline
-# images = linux). Without this, uv resolves the lock for ALL platforms incl.
-# the `python >= 3.14 + win32` split, where older dependency floors have no
-# solution — which made Dependabot's uv updater fail with
-# dependency_file_not_resolvable.
+# The project targets Linux (CI = ubuntu, pipeline images = linux) and macOS for local dev.
+# Without this, uv resolves the lock for ALL platforms incl. the `python >= 3.14 + win32`
+# split, where older dependency floors have no solution. (On Windows, use WSL — or a plain
+# venv with `uv pip install -r pyproject.toml` for running tests.)
 environments = [
     "sys_platform == 'linux'",
     "sys_platform == 'darwin'",
@@ -101,6 +93,5 @@ show_missing = true
 # infra_node, medic_node) are integration/eval-deferred, so total line coverage is
 # dominated by intentionally-untested code. This floor guards the deterministic logic
 # (validators, routing, cloud_get, state helpers) from silently losing coverage.
-# Raise it whenever real coverage grows (22 at ~26% real → 28 at ~32% → 45 with real at ~53%
-# after the professionalization pass added tests for the deterministic core + new modules).
-fail_under = 45
+# Raise it whenever real coverage grows (the trimmed mini-project suite measures ~33%).
+fail_under = 30

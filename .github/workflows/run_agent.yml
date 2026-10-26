@@ -1,4 +1,4 @@
-name: Run Multi-Cloud Self-Healing Agent
+name: Run Self-Healing Agent (AWS)
 
 on:
   workflow_dispatch:
@@ -11,9 +11,6 @@ on:
         options:
           - skip
           - eu_sales
-          - global_marketing
-          - us_crm
-          - sales_lakehouse
         default: eu_sales
 
       bootstrap_cloud:
@@ -23,10 +20,6 @@ on:
         options:
           - skip
           - aws
-          - azure
-          - gcp
-          - databricks
-          - all
         default: skip
 
       sync_knowledge_base:
@@ -53,10 +46,6 @@ on:
         type: choice
         options:
           - eu_sales
-          - global_marketing
-          - us_crm
-          - sales_lakehouse
-          - all
         default: eu_sales
 
       chaos_db_type:
@@ -65,7 +54,6 @@ on:
         type: choice
         options:
           - postgres
-          - mysql
           - sqlite
         default: postgres
 
@@ -108,48 +96,6 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION:    ${{ vars.AWS_DEFAULT_REGION }}
 
-      # ── MySQL — GCP Cloud SQL (global_marketing pipeline) ─────────────────────
-      MYSQL_DB_HOST:     ${{ vars.MYSQL_DB_HOST }}
-      MYSQL_DB_PORT:     ${{ vars.MYSQL_DB_PORT }}
-      MYSQL_DB_USER:     ${{ vars.MYSQL_DB_USER }}
-      MYSQL_DB_NAME:     ${{ vars.MYSQL_DB_NAME }}
-      MYSQL_DB_PASSWORD: ${{ secrets.MYSQL_DB_PASSWORD }}
-
-      # ── GCP — auth for infra-agent Terraform (GCS bucket + SA + IAM) + registry assembly.
-      # The google provider reads GOOGLE_CREDENTIALS as the SA-key JSON *content* (same secret
-      # the bootstrap step writes to a file for GOOGLE_APPLICATION_CREDENTIALS; a static env:
-      # block cannot write a file, so the content form is the correct equivalent here).
-      GCP_PROJECT_ID:     ${{ vars.GCP_PROJECT_ID }}
-      GOOGLE_CREDENTIALS: ${{ secrets.GCP_SA_KEY_JSON }}
-
-      # ── Azure — ARM auth (infra agent runs pipeline-level Terraform: storage + MI) ─
-      ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID }}
-      ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-      ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID }}
-
-      # ── PostgreSQL — Azure Database (us_crm pipeline) ─────────────────────────
-      # The pipeline connects with the SAME password the bootstrap set on the server,
-      # so CRM_DB_PASSWORD is sourced from the single AZURE_DB_PASSWORD secret — one
-      # password, no risk of a silent mismatch between bootstrap and pipeline.
-      CRM_DB_HOST:     ${{ vars.CRM_DB_HOST }}
-      CRM_DB_PORT:     ${{ vars.CRM_DB_PORT }}
-      CRM_DB_USER:     ${{ vars.CRM_DB_USER }}
-      CRM_DB_NAME:     ${{ vars.CRM_DB_NAME }}
-      CRM_DB_PASSWORD: ${{ secrets.AZURE_DB_PASSWORD }}
-
-      # ── Databricks — provider auth for the infra agent's pipeline-level Terraform
-      # (databricks_job + secret scope) and the databricks-cli deploy workflow.
-      DATABRICKS_HOST:          ${{ secrets.DATABRICKS_HOST }}
-      # The pipeline terraform authenticates as the SERVICE PRINCIPAL (oauth-m2m) so the job runs
-      # as the SP on its SINGLE_USER cluster (Unity Catalog access). No PAT needed.
-      DATABRICKS_CLIENT_ID:     ${{ secrets.DATABRICKS_CLIENT_ID }}
-      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-      # Same SP app id as a TF_VAR for the job's run_as { service_principal_name }.
-      TF_VAR_databricks_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
-      # The Databricks pipeline terraform reads the source DB connection from SSM
-      # (data "aws_ssm_parameter") using the AWS creds above — no TF_VAR_db_*.
-
       # ── Trino & Prometheus ────────────────────────────────────────────────────
       TRINO_HOST:     ${{ vars.TRINO_HOST }}
       TRINO_PORT:     ${{ vars.TRINO_PORT }}
@@ -187,7 +133,7 @@ jobs:
           terraform_wrapper: false
 
       - name: Bootstrap — AWS
-        if: inputs.bootstrap_cloud == 'aws' || inputs.bootstrap_cloud == 'all'
+        if: inputs.bootstrap_cloud == 'aws'
         working-directory: bootstrap/aws
         env:
           # Bootstrap uses a dedicated admin IAM user — NOT the runtime service account.
@@ -201,74 +147,6 @@ jobs:
           terraform init
           terraform apply -auto-approve
           echo "✅ AWS bootstrap complete. RDS + EKS + SSM populated."
-
-      - name: Bootstrap — Azure
-        if: inputs.bootstrap_cloud == 'azure' || inputs.bootstrap_cloud == 'all'
-        working-directory: bootstrap/azure
-        env:
-          ARM_CLIENT_ID:       ${{ secrets.ARM_CLIENT_ID }}
-          ARM_CLIENT_SECRET:   ${{ secrets.ARM_CLIENT_SECRET }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-          ARM_TENANT_ID:       ${{ secrets.ARM_TENANT_ID }}
-          TF_VAR_subscription_id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
-          TF_VAR_db_password:  ${{ secrets.AZURE_DB_PASSWORD }}
-        run: |
-          terraform init
-          terraform apply -auto-approve
-          echo "✅ Azure bootstrap complete. AKS + ACR + PostgreSQL provisioned."
-
-      - name: Bootstrap — GCP
-        if: inputs.bootstrap_cloud == 'gcp' || inputs.bootstrap_cloud == 'all'
-        working-directory: bootstrap/gcp
-        env:
-          TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
-          # db_password is a required (no-default) variable in bootstrap/gcp/variables.tf —
-          # without it `terraform apply` blocks prompting for input and the bootstrap fails.
-          TF_VAR_db_password: ${{ secrets.MYSQL_DB_PASSWORD }}
-          # NOTE: pipeline_github_repo is intentionally left at its empty default so the
-          # GitHub-Actions Workload Identity Federation pool is NOT created — the deploy
-          # authenticates with the SA key (GCP_SA_KEY_JSON), so the WIF pool is unused infra
-          # and creating it needs an extra elevated permission (workloadIdentityPoolAdmin).
-        run: |
-          echo '${{ secrets.GCP_SA_KEY_JSON }}' > /tmp/gcp-sa.json
-          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-sa.json
-          terraform init
-          terraform apply -auto-approve
-
-          # NOTE: do NOT add a manual GRANT step here. Cloud SQL MySQL grants the
-          # API-created pipeline_user (google_sql_user) its default privileges automatically.
-          # Running `gcloud sql users set-password <user> --host=%` out-of-band CREATES a
-          # second, privilege-less <user>@% entry that shadows the real one on remote
-          # connections → 1044 "Access denied to database". Manage these users only via
-          # terraform; never set-password/create them with a different --host by hand.
-
-          rm /tmp/gcp-sa.json
-          echo "✅ GCP bootstrap complete. GKE + Artifact Registry + Cloud SQL provisioned."
-
-      - name: Bootstrap — Databricks
-        if: inputs.bootstrap_cloud == 'databricks' || inputs.bootstrap_cloud == 'all'
-        working-directory: bootstrap/databricks
-        env:
-          # The account-level provider (creates the workspace + Unity Catalog metastore) auths
-          # with an ACCOUNT SERVICE PRINCIPAL — not a workspace token, which does not exist until
-          # the workspace is created. The workspace-level provider re-uses the same SP.
-          DATABRICKS_ACCOUNT_ID:    ${{ secrets.DATABRICKS_ACCOUNT_ID }}
-          DATABRICKS_CLIENT_ID:     ${{ secrets.DATABRICKS_CLIENT_ID }}
-          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
-          # host_cloud = aws → S3 DBFS root + cross-account IAM + remote state backend.
-          AWS_ACCESS_KEY_ID:     ${{ secrets.BOOTSTRAP_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.BOOTSTRAP_AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION:    eu-central-1
-          # Required bootstrap variables (no defaults).
-          TF_VAR_account_id:  ${{ secrets.DATABRICKS_ACCOUNT_ID }}
-          TF_VAR_bucket_name: ${{ vars.DATABRICKS_DBFS_BUCKET }}
-          # SP application id — the jobs cluster (SINGLE_USER) is assigned to it for Unity Catalog.
-          TF_VAR_databricks_client_id: ${{ secrets.DATABRICKS_CLIENT_ID }}
-          # The source RDS password is auto-generated and published to SSM — no TF_VAR.
-        run: |
-          terraform init
-          terraform apply -auto-approve
-          echo "✅ Databricks bootstrap complete. Workspace + Unity Catalog provisioned."
 
       # ── STEP 2: Sync Knowledge Base (optional) ───────────────────────────────
       - name: Sync Knowledge Base to Pinecone
