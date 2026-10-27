@@ -21,14 +21,13 @@ import yaml
 from pathlib import Path
 from typing import Literal
 from pydantic import BaseModel, field_validator, ValidationError
-from openai import OpenAI
 from dotenv import load_dotenv
 from agents.constants import CONFIGS_DIR
 from utils.cloud_config import _ENV_FALLBACKS
-from utils.llm_defaults import NL_MODEL
+from utils.llm_defaults import NL_MODEL, make_nl_client
 
 load_dotenv()
-client = OpenAI()
+client = make_nl_client()  # OpenAI, or Gemini's OpenAI-compatible endpoint (LLM_PROVIDER)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _BOOTSTRAP_OUTPUTS_FILE = _PROJECT_ROOT / ".bootstrap_outputs.json"

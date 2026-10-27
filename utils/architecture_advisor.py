@@ -5,10 +5,9 @@ assessment of how the workload maps onto this project's AWS big-data stack
 """
 from __future__ import annotations
 import json
-import os
 
 from utils.cost_estimator import estimate_monthly_cost
-from utils.llm_defaults import NL_MODEL
+from utils.llm_defaults import NL_MODEL, make_nl_client, nl_api_key
 
 _SYSTEM = """\
 You are an expert AWS data architect. A user will describe a data pipeline need in plain
@@ -44,7 +43,7 @@ Rules:
 
 
 def analyze(description: str) -> dict:
-    api_key = os.getenv("OPENAI_API_KEY", "")
+    api_key = nl_api_key()
     if api_key:
         try:
             raw    = _call_gpt(description, api_key)
@@ -56,8 +55,7 @@ def analyze(description: str) -> dict:
 
 
 def _call_gpt(description: str, api_key: str) -> str:
-    from openai import OpenAI
-    client = OpenAI(api_key=api_key)
+    client = make_nl_client()
     resp = client.chat.completions.create(
         model=NL_MODEL,
         messages=[

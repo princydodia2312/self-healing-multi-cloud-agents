@@ -13,12 +13,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 import yaml
 from sqlalchemy import URL, create_engine, inspect, text
-from openai import OpenAI
 from pinecone import Pinecone
 import time
 import logging
-from langchain_openai import OpenAIEmbeddings
 from utils.cloud_config import cloud_get
+from utils.llm_defaults import make_embeddings
 from agents.constants import K8S_PINNED_IMAGES
 
 # Initialize Pinecone client
@@ -60,26 +59,27 @@ def _find_git_root(start: Path) -> Path:
 REPO_ROOT = _find_git_root(PROJECT_ROOT)
 
 # --- INITIALIZE CLIENTS ---
+# Embeddings follow LLM_PROVIDER (OpenAI text-embedding-3-small, or Gemini gemini-embedding-2 at
+# the same 1536 dimensions) — see utils/llm_defaults.make_embeddings.
 try:
-    client = OpenAI()
-    embeddings_model = OpenAIEmbeddings(model="text-embedding-3-small")
-except Exception as _openai_err:
-    print(f"WARNING: OpenAI client initialization failed: {_openai_err}. Check OPENAI_API_KEY.")
-    client = None
+    embeddings_model = make_embeddings()
+except Exception as _embed_err:
+    print(f"WARNING: Embeddings client initialization failed: {_embed_err}. "
+          f"Check OPENAI_API_KEY / GEMINI_API_KEY for LLM_PROVIDER.")
     embeddings_model = None
 
 # --- HELPERS (Not tools) ---
 def get_embedding(text):
-    """Generates embeddings using OpenAI's text-embedding-3-small model."""
+    """Generates an embedding with the configured provider's embedding model (EMBED_MODEL)."""
     try:
-        if client is None:
+        if embeddings_model is None:
             return None
         if not text:
             return None
         text = text.replace("\n", " ")
-        return client.embeddings.create(input=[text], model="text-embedding-3-small").data[0].embedding
+        return embeddings_model.embed_query(text)
     except Exception as e:
-        print(f"Error calling OpenAI Embedding API: {e}")
+        print(f"Error calling the embedding API: {e}")
         return None
 
 
@@ -2881,7 +2881,7 @@ def store_architectural_insight(error_summary: str, solution: str, cloud_provide
     insight_text = f"ISSUE: {error_summary}\nFIX: {solution}\nPROVIDER: {cloud_provider}"
 
     # 3. Generate Embedding (using the same logic as the injection script)
-    vector = get_embedding(insight_text) # Use text-embedding-3-small
+    vector = get_embedding(insight_text)  # EMBED_MODEL (provider-specific)
 
     if vector:
         # 4. Upsert to Pinecone in the 'dynamic-experience' namespace

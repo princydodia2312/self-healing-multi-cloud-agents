@@ -7,8 +7,9 @@ import logging
 from pathlib import Path
 from glob import glob
 from pinecone import Pinecone
-from openai import OpenAI
 from dotenv import load_dotenv
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root → `utils` importable
 
 # Shared token-budget guard (utils is on sys.path via PYTHONPATH=/app in the image; for local runs
 # the repo root is the CWD). Import defensively so the ingest still runs if utils is unavailable.
@@ -31,33 +32,32 @@ logger = logging.getLogger(__name__)
 load_dotenv() # Load from .env if local
 
 # --- CLIENT INITIALIZATION ---
+from utils.llm_defaults import EMBED_MODEL, make_embeddings, nl_api_key, using_gemini  # noqa: E402
+
 PINECONE_KEY = os.getenv("PINECONE_API_KEY")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+EMBED_KEY = nl_api_key()  # OPENAI_API_KEY, or GEMINI_API_KEY when LLM_PROVIDER=gemini
 # Default MUST match .env.example and agents/tools.py (store_architectural_insight) so an unset
 # PINECONE_INDEX_NAME resolves to the same index everywhere — otherwise ingest and retrieval diverge.
 INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "unified-intelligence-fabric")
 
-if not PINECONE_KEY or not OPENAI_KEY:
-    logger.error("Missing API Keys! Ensure PINECONE_API_KEY and OPENAI_API_KEY are set.")
+if not PINECONE_KEY or not EMBED_KEY:
+    _key = "GEMINI_API_KEY" if using_gemini() else "OPENAI_API_KEY"
+    logger.error(f"Missing API Keys! Ensure PINECONE_API_KEY and {_key} are set.")
     raise ValueError("Environment variables for API keys are missing.")
 
 try:
     pc = Pinecone(api_key=PINECONE_KEY)
-    client = OpenAI(api_key=OPENAI_KEY)
+    embeddings = make_embeddings()
     index = pc.Index(INDEX_NAME)
-    logger.info(f"Connected to Pinecone index: {INDEX_NAME}")
+    logger.info(f"Connected to Pinecone index: {INDEX_NAME} (embedding model: {EMBED_MODEL})")
 except Exception as e:
     logger.error(f"Failed to initialize AI clients: {e}")
     raise
 
 def get_embedding(text):
-    """Generates embeddings using OpenAI's text-embedding-3-small."""
+    """Generates a document embedding with the configured EMBED_MODEL."""
     try:
-        response = client.embeddings.create(
-            input=[text],
-            model="text-embedding-3-small"
-        )
-        return response.data[0].embedding
+        return embeddings.embed_documents([text])[0]
     except Exception as e:
         logger.error(f"Error generating embedding: {e}")
         return None

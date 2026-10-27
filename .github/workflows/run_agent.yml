@@ -78,9 +78,11 @@ jobs:
 
       # ── LLM ─────────────────────────────────────────────────────────────────
       LLM_MODEL:         ${{ vars.LLM_MODEL }}
+      LLM_PROVIDER:      ${{ vars.LLM_PROVIDER }}
       LLM_TIMEOUT_SEC:   ${{ vars.LLM_TIMEOUT_SEC }}
       LLM_MAX_RETRIES:   ${{ vars.LLM_MAX_RETRIES }}
       OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+      GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
       # ── Vector Store ─────────────────────────────────────────────────────────

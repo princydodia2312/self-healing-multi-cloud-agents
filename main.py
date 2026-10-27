@@ -238,10 +238,16 @@ def run_self_healing_system(pipeline_name: str):
 
 if __name__ == "__main__":
     from agents.llm_factory import _infer_provider
-    _model    = os.getenv("LLM_MODEL", "gpt-4o")
-    _provider = (os.getenv("LLM_PROVIDER") or _infer_provider(_model)).lower()
+    from utils.llm_defaults import default_agent_model, gemini_api_key
+    _explicit = (os.getenv("LLM_PROVIDER") or "").lower()
+    _model    = os.getenv("LLM_MODEL") or default_agent_model(_explicit or "openai")
+    _provider = _explicit or _infer_provider(_model)
     if _provider == "openai" and not os.getenv("OPENAI_API_KEY"):
         logger.error("OPENAI_API_KEY not set. Add it to .env (local) or GitHub Secrets (CI).")
+        sys.exit(1)
+    if _provider == "gemini" and not gemini_api_key():
+        logger.error("GEMINI_API_KEY not set. Get a free key at https://aistudio.google.com/apikey "
+                     "and add it to .env (local) or GitHub Secrets (CI).")
         sys.exit(1)
     if _provider == "anthropic" and not os.getenv("ANTHROPIC_API_KEY"):
         logger.error("ANTHROPIC_API_KEY not set. Add it to .env (local) or GitHub Secrets (CI).")

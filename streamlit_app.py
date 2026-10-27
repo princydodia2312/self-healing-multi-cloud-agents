@@ -6,7 +6,8 @@ Run locally:
 
 Deploy to Streamlit Cloud:
     Push to GitHub, connect at share.streamlit.io
-    Add secrets: OPENAI_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME, GITHUB_TOKEN
+    Add secrets: OPENAI_API_KEY (or GEMINI_API_KEY + LLM_PROVIDER=gemini), PINECONE_API_KEY,
+    PINECONE_INDEX_NAME, GITHUB_TOKEN
 """
 
 import os
@@ -33,6 +34,8 @@ try:
             os.environ[key] = str(val)
 except Exception:
     pass
+
+from utils.llm_defaults import nl_api_key as _nl_api_key, using_gemini as _using_gemini  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -1085,7 +1088,7 @@ with st.sidebar:
 
     # ── API Keys (read-only status) ──────────────────────────
     checks = {
-        "OpenAI":   bool(os.getenv("OPENAI_API_KEY")),
+        ("Gemini" if _using_gemini() else "OpenAI"): bool(_nl_api_key()),
         "Pinecone": bool(os.getenv("PINECONE_API_KEY")),
         "GitHub":   bool(os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")),
     }

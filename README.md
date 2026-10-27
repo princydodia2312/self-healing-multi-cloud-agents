@@ -6,7 +6,7 @@
 |---|---|
 | **Team** | _Member 1_ · _Member 2_ · _Member 3_ |
 | **Subject** | Big Data Analytics — mini project |
-| **Stack** | Python · pandas · PyArrow/Parquet · PostgreSQL (RDS) · Amazon S3 · Trino · Prometheus + Grafana · Kubernetes (EKS) · Terraform · GitHub Actions · LangGraph |
+| **Stack** | Python · pandas · PyArrow/Parquet · PostgreSQL (RDS) · Amazon S3 · Trino · Prometheus + Grafana · Kubernetes (EKS) · Terraform · GitHub Actions · LangGraph · Gemini (free) or OpenAI |
 
 ---
 
@@ -142,7 +142,8 @@ Safety limits:
 **Prerequisites:**
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
 - Terraform ≥ 1.6 and the AWS CLI
-- an OpenAI API key and a Pinecone index (dimension 1536, cosine)
+- an LLM API key: a **free Google Gemini key** (default, see below) or an OpenAI key
+- a Pinecone index (dimension 1536, cosine; Pinecone's starter plan is free)
 - an AWS account
 - a GitHub token with `repo` and `workflow` scopes
 
@@ -163,6 +164,16 @@ make streamlit            # web UI on http://localhost:8501
 ```
 
 The same steps are available from GitHub Actions in `run_agent.yml` (manual dispatch with bootstrap, knowledge-base sync, chaos and pipeline inputs).
+
+**Free LLM option (Google Gemini).** The project runs on the Gemini API free tier as well as on OpenAI. One setting in `.env` switches the agents, the Streamlit UI and the RAG embeddings together:
+
+```bash
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=...          # free key from https://aistudio.google.com/apikey
+# defaults: agents gemini-3.8-flash · NL/UI gemini-3.5-flash-lite · embeddings gemini-embedding-2 (1536-dim)
+```
+
+To use OpenAI instead, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. After switching provider, run `make ingest` again, because embeddings from different models can't be mixed in one index. The free tier has per-minute and per-day request limits (your current limits are shown in AI Studio), and Google may use free-tier prompts to improve its products.
 
 > **Cost warning.** The AWS baseline (EKS + RDS) bills by the hour, about $230/month while running (`make cost`). Use `make aws-pause` between sessions and `make aws-resume` before a demo. Tear everything down with `make destroy-aws` or the `destroy.yml` workflow after the evaluation.
 

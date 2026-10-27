@@ -10,6 +10,8 @@ dependencies = [
     "langchain>=1.2.15",
     "langchain-core>=1.2.28",
     "langchain-openai>=1.1.12",
+    # Free alternative to OpenAI: Google Gemini API (LLM_PROVIDER=gemini) — chat + embeddings
+    "langchain-google-genai==4.4.2",
     "langgraph>=1.1.6",
     "numpy>=2.4.4",
     "openai>=2.31.0",

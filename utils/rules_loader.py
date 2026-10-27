@@ -34,12 +34,11 @@ rules:
 """
 from __future__ import annotations
 import json
-import os
 from pathlib import Path
 
 import yaml
 
-from utils.llm_defaults import NL_MODEL
+from utils.llm_defaults import NL_MODEL, make_nl_client, nl_api_key
 
 _RULES_DIR = Path(__file__).resolve().parent.parent / "configs" / "business_rules"
 
@@ -245,13 +244,12 @@ data is mentioned, and a freshness check.
 
 def extract_rules_from_nl(description: str) -> dict:
     """Use the NL model (NL_MODEL) to extract rules from a plain-English description."""
-    api_key = os.getenv("OPENAI_API_KEY", "")
+    api_key = nl_api_key()
     if not api_key:
         return _fallback_rules(description)
 
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
+        client = make_nl_client()
         resp = client.chat.completions.create(
             model=NL_MODEL,
             messages=[
