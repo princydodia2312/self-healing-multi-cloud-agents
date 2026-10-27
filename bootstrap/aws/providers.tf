@@ -20,7 +20,7 @@ terraform {
   # Stores only the bootstrap state, avoiding circular dependency with
   # the self-healing-agent-tf-state-bucket that bootstrap itself creates.
   backend "s3" {
-    bucket = "multi-cloud-agent-bootstrap-state"
+    bucket = "multi-cloud-agent-bootstrap-state-princy2312"
     key    = "terraform.tfstate"
     region = "eu-central-1"
   }

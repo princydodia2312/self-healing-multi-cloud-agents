@@ -43,7 +43,7 @@ RDS PostgreSQL ──pandas (chunked)──▶ business rules ──▶ snappy P
 | Layer | Component |
 |---|---|
 | Compute | EKS (pipeline runs as a Kubernetes `Job`) |
-| Storage | S3: `s3://eu-sales-insights-data/processed/run_date=<date>/` |
+| Storage | S3: `s3://eu-sales-insights-data-princy2312/processed/run_date=<date>/` |
 | Registry | ECR |
 | Source DB | RDS PostgreSQL (`raw_eu_sales`) |
 | Catalog / SQL | Trino `hive` catalog backed by AWS Glue |

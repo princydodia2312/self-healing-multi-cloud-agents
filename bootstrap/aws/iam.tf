@@ -226,8 +226,8 @@ resource "aws_iam_role_policy" "irsa_eu_sales" {
         Effect = "Allow"
         Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
         Resource = [
-          "arn:aws:s3:::eu-sales-insights-data",
-          "arn:aws:s3:::eu-sales-insights-data/*",
+          "arn:aws:s3:::eu-sales-insights-data-princy2312",
+          "arn:aws:s3:::eu-sales-insights-data-princy2312/*",
         ]
       },
       {

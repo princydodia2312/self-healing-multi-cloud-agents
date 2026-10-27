@@ -107,7 +107,7 @@ spec:
         - name: CLOUD_PROVIDER
           value: "<cloud_provider>"                     # aws | azure | gcp
         - name: DESTINATION_URI
-          value: "<LOGICAL_DESTINATION.uri>"            # e.g. s3://eu-sales-insights-data/processed/ — the pipeline script reads os.getenv("DESTINATION_URI") at runtime; omitting this causes immediate failure with None
+          value: "<LOGICAL_DESTINATION.uri>"            # e.g. s3://eu-sales-insights-data-princy2312/processed/ — the pipeline script reads os.getenv("DESTINATION_URI") at runtime; omitting this causes immediate failure with None
         - name: BUCKET_NAME
           value: "<bucket_name>"
         - name: TRINO_HOST

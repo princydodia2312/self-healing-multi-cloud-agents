@@ -3,7 +3,7 @@ variable "region" {
 }
 
 variable "state_bucket" {
-  default = "multi-cloud-agent-tf-state-bucket"
+  default = "multi-cloud-agent-tf-state-bucket-princy2312"
 }
 
 variable "lock_table" {

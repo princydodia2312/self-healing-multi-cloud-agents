@@ -3,7 +3,7 @@ name: Destroy AWS Infrastructure
 # Manual, irreversible teardown of the ENTIRE AWS footprint — bootstrap (EKS, RDS,
 # ECR, IAM, state bucket) + the agent-generated pipeline infra (S3 data bucket + IAM).
 # Only the manually-created terraform state backend of the bootstrap is kept
-# (s3://multi-cloud-agent-bootstrap-state).
+# (s3://multi-cloud-agent-bootstrap-state-princy2312).
 #
 # A typed confirmation guards every run. For a cheaper pause between demo sessions,
 # use `make aws-pause` instead (stops RDS + scales EKS nodes to 0, keeps everything).
@@ -30,8 +30,8 @@ jobs:
       AWS_ACCESS_KEY_ID:     ${{ secrets.BOOTSTRAP_AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.BOOTSTRAP_AWS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION:    ${{ vars.AWS_DEFAULT_REGION }}
-      DATA_BUCKET:    eu-sales-insights-data
-      STATE_BUCKET:   multi-cloud-agent-tf-state-bucket
+      DATA_BUCKET:    eu-sales-insights-data-princy2312
+      STATE_BUCKET:   multi-cloud-agent-tf-state-bucket-princy2312
       CLUSTER_NAME:   multi-cloud-agent-cluster
 
     steps:
@@ -106,4 +106,4 @@ jobs:
         run: |
           terraform init -input=false
           terraform destroy -auto-approve -input=false
-          echo "✅ AWS teardown complete. Only s3://multi-cloud-agent-bootstrap-state remains."
+          echo "✅ AWS teardown complete. Only s3://multi-cloud-agent-bootstrap-state-princy2312 remains."

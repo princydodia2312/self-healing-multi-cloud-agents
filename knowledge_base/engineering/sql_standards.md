@@ -28,7 +28,7 @@ When generating `setup_trino.sql`, ensure the following:
 
   | Cloud | Catalog name | Correct protocol | Example |
   |---|---|---|---|
-  | AWS (Hive + Glue) | `hive` | `s3://` | `s3://eu-sales-insights-data/processed/` |
+  | AWS (Hive + Glue) | `hive` | `s3://` | `s3://eu-sales-insights-data-princy2312/processed/` |
   | Azure (Hive + ABFS) | `hive` | `abfss://` | `abfss://us-crm-insights-data@uscrminsightsstorage.dfs.core.windows.net/processed/` |
   | GCP (Hive + GCS) | `hive` | `gs://` | `gs://global-marketing-insights-data/processed/` |
 
@@ -79,7 +79,7 @@ When generating `setup_trino.sql`, ensure the following:
         run_date    DATE
     ) WITH (
         format            = 'PARQUET',
-        external_location = 's3://eu-sales-insights-data/processed/',
+        external_location = 's3://eu-sales-insights-data-princy2312/processed/',
         partitioned_by    = ARRAY['run_date']
     );
 

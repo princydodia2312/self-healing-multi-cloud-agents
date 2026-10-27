@@ -39,7 +39,7 @@ spec:
         - name: CLOUD_PROVIDER
           value: "aws"
         - name: DESTINATION_URI
-          value: "s3://eu-sales-insights-data/processed/"
+          value: "s3://eu-sales-insights-data-princy2312/processed/"
         - name: TRINO_HOST
           value: "trino.analytics.svc.cluster.local"
         - name: PUSHGATEWAY_URL

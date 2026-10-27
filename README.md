@@ -44,7 +44,7 @@ flowchart LR
 | **Ingestion** | Chunked SQLAlchemy reads from RDS PostgreSQL. The whole table is never loaded into memory at once. |
 | **Data quality / cleansing** | Six rules in [`configs/business_rules/sales_logic.yaml`](configs/business_rules/sales_logic.yaml), compiled into real pandas conditions (see §3) |
 | **Columnar storage** | Apache **Parquet** with **snappy** compression (PyArrow + s3fs) |
-| **Partitioning** | Hive-style `s3://eu-sales-insights-data/processed/run_date=<date>/` |
+| **Partitioning** | Hive-style `s3://eu-sales-insights-data-princy2312/processed/run_date=<date>/` |
 | **Idempotency** | If today's `run_date` partition already exists, the job exits without rewriting it |
 | **Schema-on-read / SQL engine** | Trino external table over S3 (`sql/setup_trino.sql`) with the Glue metastore. The partitions are synced, so a filter on `run_date` only scans the matching S3 prefixes (partition pruning). |
 | **Observability** | The job pushes `rows_processed`, `rows_rejected` (per rule) and `duration_seconds` to Prometheus Pushgateway. A Grafana dashboard plus a 60-minute *data silence* alert are generated with the pipeline. |

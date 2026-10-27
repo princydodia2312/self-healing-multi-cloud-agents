@@ -86,7 +86,7 @@ class TestK8sGoldens:
     def test_job_writes_parquet_to_s3(self):
         doc = _docs(codegen.render_job(AWS_CONF, "aws", REGISTRY))[0]
         env = {e["name"]: e.get("value") for e in doc["spec"]["template"]["spec"]["containers"][0]["env"]}
-        assert env["DESTINATION_URI"] == "s3://eu-sales-insights-data/processed/"
+        assert env["DESTINATION_URI"] == "s3://eu-sales-insights-data-princy2312/processed/"
         assert env["CLOUD_PROVIDER"] == "aws"
 
     def test_configmaps_match_golden(self, tmp_path, monkeypatch):

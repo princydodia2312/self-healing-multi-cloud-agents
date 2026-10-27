@@ -1,6 +1,6 @@
 aws_setup:
   aws_account_id: "000000000000"
-  bucket_name: eu-sales-insights-data
+  bucket_name: eu-sales-insights-data-princy2312
   ecr_repository_name: eu-sales-pipeline-repo
   eks_cluster_name: multi-cloud-agent-cluster
   iam_role_name: eu-sales-insights-role
@@ -8,7 +8,7 @@ aws_setup:
   k8s_service_account_name: eu-sales-insights-sa
   lock_table: terraform-state-lock
   region: eu-central-1
-  state_bucket: multi-cloud-agent-tf-state-bucket
+  state_bucket: multi-cloud-agent-tf-state-bucket-princy2312
   state_key: terraform/eu-sales-insights/terraform.tfstate
 business_rules_config: configs/business_rules/sales_logic.yaml
 cloud_provider: aws

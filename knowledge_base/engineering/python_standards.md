@@ -59,7 +59,7 @@ elif _CLOUD == "gcp":
 - `destination_uri` MUST come from `os.getenv("DESTINATION_URI")` — **never hardcode a URI string** (`"s3://..."`, `"gs://..."`, `"abfss://..."`). The K8s Job injects this at runtime; hardcoding it makes the script un-deployable to a different bucket without a code change.
 ```python
 # ❌ WRONG — hardcoded, cannot be overridden at deploy time:
-destination_uri = "s3://eu-sales-insights-data/processed/"
+destination_uri = "s3://eu-sales-insights-data-princy2312/processed/"
 
 # ✅ CORRECT — injected by the K8s Job env block:
 destination_uri = os.getenv("DESTINATION_URI")
@@ -469,7 +469,7 @@ if __name__ == "__main__":
 ## Storage URI by Cloud
 | Cloud | Protocol | Example |
 |---|---|---|
-| AWS | `s3://` | `s3://eu-sales-insights-data/processed/` |
+| AWS | `s3://` | `s3://eu-sales-insights-data-princy2312/processed/` |
 | GCP | `gs://` | `gs://global-marketing-insights-data/processed/` |
 | Azure | `abfss://` | `abfss://container@account.dfs.core.windows.net/processed/` |
 

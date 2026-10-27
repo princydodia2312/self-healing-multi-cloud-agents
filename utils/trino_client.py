@@ -10,7 +10,7 @@ import os
 import pandas as pd
 
 # ── Pre-built analytical query shown in the UI ──────────────────────────────
-# The eu_sales pipeline writes snappy Parquet to s3://eu-sales-insights-data/processed/
+# The eu_sales pipeline writes snappy Parquet to s3://eu-sales-insights-data-princy2312/processed/
 # partitioned by run_date; sql/setup_trino.sql registers it as an external Hive table.
 # Filtering on the partition column lets Trino prune whole S3 prefixes instead of
 # scanning every file.

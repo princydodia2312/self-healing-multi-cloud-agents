@@ -9,15 +9,15 @@
 **DATA PIPELINE (PYTHON):**
 - Source: `postgres` database — table from `DATA_SOURCE.table` in your context (never guess or invent a table name)
 - Output format: parquet/snappy
-- Destination URI: `s3://eu-sales-insights-data/processed/`
-- Idempotency: check `s3://eu-sales-insights-data/processed/run_date=<today>/` before writing. If data exists, exit 0.
+- Destination URI: `s3://eu-sales-insights-data-princy2312/processed/`
+- Idempotency: check `s3://eu-sales-insights-data-princy2312/processed/run_date=<today>/` before writing. If data exists, exit 0.
 - Save script to: `scripts/pipe_eu_sales_to_s3.py`
 
 **BUSINESS RULES:**
   - See `TRANSFORMATION_LOGIC` in your context — this is the authoritative and complete rules list. Do not infer or skip rules based on this task description.
 
 **CATALOG & OBSERVABILITY:**
-- Trino DDL: `sql/setup_trino.sql` — external table at `s3://eu-sales-insights-data/processed/` with `run_date` partitioning
+- Trino DDL: `sql/setup_trino.sql` — external table at `s3://eu-sales-insights-data-princy2312/processed/` with `run_date` partitioning
 - Trino target: `hive.sales_eu.pipe_eu_sales_to_s3`
 - Grafana: `dashboards/monitoring_specs.json` with 60-minute Data Silence alert
 
