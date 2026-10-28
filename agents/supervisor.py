@@ -88,6 +88,12 @@ def supervisor_node(state: AgentState):
 
     # 3. DETERMINISTIC ROUTING (State-Driven Logic)
 
+    # RULE 0: Mission start — nothing has run yet, so the Architect always goes first. Deterministic:
+    # no LLM call (an unavailable model at this point used to fall back to the Medic and crash).
+    if last_step in (None, "", "None") and arch_status != "completed":
+        logger.info("Mission start. Routing to ARCHITECT.")
+        return {"next_step": "architect"}
+
     # RULE A: Architect Logic Flow
     if last_step == "architect":
         # Primary check: explicit error flag set by architect_node
@@ -213,7 +219,8 @@ def supervisor_node(state: AgentState):
 
     try:
         response = llm.invoke(messages)
-        decision = response.content.upper().strip()
+        # .text (not .content): Gemini 3 can return content as a list of blocks, not a str.
+        decision = str(getattr(response, "text", None) or response.content).upper().strip()
         decision = re.sub(r'[^A-Z]', '', decision)
     except Exception as e:
         logger.error(f"LLM Supervisor Fallback Error: {e}")

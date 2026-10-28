@@ -38,6 +38,14 @@ def mock_get_llm():
         yield
 
 
+class TestRule0Start:
+    def test_mission_start_routes_to_architect_without_llm(self):
+        with patch("agents.supervisor.get_llm") as gl:
+            result = supervisor_node(_make_state(last_agent="None", messages=[]))
+        assert result["next_step"] == "architect"
+        gl.return_value.invoke.assert_not_called()
+
+
 class TestRuleAArchitect:
 
     def test_architect_completed_routes_to_infra(self):

@@ -11,7 +11,7 @@ from agents import llm_factory
 
 
 _KEYS = ("LLM_PROVIDER", "LLM_MODEL", "NL_MODEL", "EMBED_MODEL", "EMBED_DIMENSIONS",
-         "LLM_MAX_RETRIES", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+         "LLM_MAX_RETRIES", "LLM_FALLBACK_MODEL", "GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 
 @pytest.fixture
@@ -46,26 +46,51 @@ class TestProviderInference:
 
 
 class TestGetLlmGemini:
-    def test_provider_only_uses_gemini_default_model_and_key(self, env):
+    def test_provider_only_uses_gemini_default_model_with_fallback(self, env):
         env.setenv("LLM_PROVIDER", "gemini")
         env.setenv("GEMINI_API_KEY", "g-key")
         fake = MagicMock()
-        with patch("langchain_google_genai.ChatGoogleGenerativeAI", fake):
-            llm_factory.get_llm(temperature=0)
-        kwargs = fake.call_args.kwargs
-        assert kwargs["model"] == "gemini-3.8-flash"
-        assert kwargs["google_api_key"] == "g-key"
-        assert kwargs["max_retries"] == 6           # patient retries for free-tier rate limits
-        assert "temperature" not in kwargs          # Gemini 3+: keep Google's default sampling
+        with patch.object(llm_factory, "_gemini_chat_cls", return_value=fake):
+            llm = llm_factory.get_llm(temperature=0)
+        primary, fallback = (c.kwargs for c in fake.call_args_list)
+        assert primary["model"] == "gemini-3.8-flash" and fallback["model"] == "gemini-3.6-flash"
+        assert primary["google_api_key"] == "g-key"
+        assert primary["max_retries"] == 2           # give up sooner on an overloaded primary...
+        assert "temperature" not in primary          # Gemini 3+: keep Google's default sampling
+        fake.return_value.with_fallbacks.assert_called_once()   # ...and switch to the fallback
+        assert llm is fake.return_value.with_fallbacks.return_value
+
+    def test_fallback_can_be_disabled(self, env):
+        env.setenv("LLM_PROVIDER", "gemini")
+        env.setenv("LLM_FALLBACK_MODEL", "none")
+        fake = MagicMock()
+        with patch.object(llm_factory, "_gemini_chat_cls", return_value=fake):
+            llm = llm_factory.get_llm(temperature=0)
+        assert fake.call_count == 1
+        assert fake.call_args.kwargs["max_retries"] == 6   # patient retries without a fallback
+        assert llm is fake.return_value
 
     def test_older_gemini_model_keeps_temperature(self, env):
         env.setenv("LLM_MODEL", "gemini-2.5-flash")
         env.setenv("GOOGLE_API_KEY", "g-key")
         fake = MagicMock()
-        with patch("langchain_google_genai.ChatGoogleGenerativeAI", fake):
+        with patch.object(llm_factory, "_gemini_chat_cls", return_value=fake):
             llm_factory.get_llm(temperature=0.1)
-        assert fake.call_args.kwargs["temperature"] == 0.1
-        assert fake.call_args.kwargs["google_api_key"] == "g-key"
+        assert fake.call_args_list[0].kwargs["temperature"] == 0.1
+        assert fake.call_args_list[0].kwargs["google_api_key"] == "g-key"
+
+    def test_real_gemini_class_supports_bind_tools_with_fallback(self, env):
+        env.setenv("LLM_PROVIDER", "gemini")
+        env.setenv("GEMINI_API_KEY", "g-key")
+        from langchain_core.tools import tool
+
+        @tool
+        def ping(x: str) -> str:
+            """Echo."""
+            return x
+
+        llm = llm_factory.get_llm()
+        assert llm.bind_tools([ping], tool_choice="required") is not None   # no network call
 
     def test_openai_path_unchanged(self, env):
         fake = MagicMock()
@@ -73,6 +98,18 @@ class TestGetLlmGemini:
             llm_factory.get_llm(temperature=0)
         assert fake.call_args.kwargs["model"] == "gpt-4o"
         assert fake.call_args.kwargs["max_retries"] == 1
+
+
+class TestGeminiUserTurnGuard:
+    def test_system_only_request_gets_a_user_turn(self):
+        from langchain_core.messages import HumanMessage, SystemMessage
+        out = llm_factory._with_user_turn([SystemMessage(content="rules")])
+        assert isinstance(out[-1], HumanMessage) and len(out) == 2
+
+    def test_existing_conversation_untouched(self):
+        from langchain_core.messages import HumanMessage, SystemMessage
+        msgs = [SystemMessage(content="rules"), HumanMessage(content="hi")]
+        assert llm_factory._with_user_turn(msgs) == msgs
 
 
 class TestDefaults:

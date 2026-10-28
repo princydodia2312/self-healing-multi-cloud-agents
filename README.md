@@ -170,7 +170,7 @@ The same steps are available from GitHub Actions in `run_agent.yml` (manual disp
 ```bash
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=...          # free key from https://aistudio.google.com/apikey
-# defaults: agents gemini-3.8-flash · NL/UI gemini-3.5-flash-lite · embeddings gemini-embedding-2 (1536-dim)
+# defaults: agents gemini-3.8-flash (falls back to gemini-3.6-flash when overloaded) · NL/UI gemini-3.5-flash-lite · embeddings gemini-embedding-2 (1536-dim)
 ```
 
 To use OpenAI instead, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. After switching provider, run `make ingest` again, because embeddings from different models can't be mixed in one index. The free tier has per-minute and per-day request limits (your current limits are shown in AI Studio), and Google may use free-tier prompts to improve its products.
