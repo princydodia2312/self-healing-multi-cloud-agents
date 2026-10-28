@@ -28,8 +28,11 @@ resource "aws_eks_cluster" "main" {
   role_arn                      = aws_iam_role.eks_cluster.arn
   bootstrap_self_managed_addons = false
 
+  # The creator gets NO implicit access entry: cluster-admin is granted explicitly to
+  # var.pipeline_iam_arn (iam.tf), which may be the same user that runs this bootstrap.
   access_config {
-    authentication_mode = "API"
+    authentication_mode                         = "API"
+    bootstrap_cluster_creator_admin_permissions = false
   }
 
   compute_config {

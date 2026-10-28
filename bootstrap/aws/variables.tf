@@ -49,3 +49,9 @@ variable "pipeline_iam_arn" {
   description = "ARN of the IAM user/role used by the CI pipeline. Gets cluster-admin access to EKS."
   type        = string
 }
+
+variable "extra_admin_arn" {
+  description = "Optional second IAM principal to grant EKS cluster-admin (leave empty when one IAM user runs everything)"
+  type        = string
+  default     = ""
+}

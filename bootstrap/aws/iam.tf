@@ -147,17 +147,26 @@ resource "aws_iam_role_policy_attachment" "eks_node" {
   policy_arn = each.value
 }
 
-# ── EKS Access: Bootstrap Admin ───────────────────────────────────────────────
+# ── EKS Access: optional extra admin ─────────────────────────────────────────
+# The CI pipeline user (below) is the cluster admin. When a SEPARATE IAM principal runs the
+# bootstrap, set var.extra_admin_arn to give it cluster-admin too. Left empty (the default),
+# one IAM user runs everything and no extra entry is created.
+
+locals {
+  add_extra_admin = var.extra_admin_arn != "" && var.extra_admin_arn != var.pipeline_iam_arn
+}
 
 resource "aws_eks_access_entry" "bootstrap_admin" {
+  count         = local.add_extra_admin ? 1 : 0
   cluster_name  = aws_eks_cluster.main.name
-  principal_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/bootstrap-admin"
+  principal_arn = var.extra_admin_arn
   type          = "STANDARD"
 }
 
 resource "aws_eks_access_policy_association" "bootstrap_admin" {
+  count         = local.add_extra_admin ? 1 : 0
   cluster_name  = aws_eks_cluster.main.name
-  principal_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/bootstrap-admin"
+  principal_arn = var.extra_admin_arn
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
 
   access_scope {
