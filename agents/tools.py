@@ -18,6 +18,7 @@ import time
 import logging
 from utils.cloud_config import cloud_get
 from utils.llm_defaults import make_embeddings
+from utils.embedding_budget import embed_with_retry
 from agents.constants import K8S_PINNED_IMAGES
 
 # Initialize Pinecone client
@@ -77,7 +78,7 @@ def get_embedding(text):
         if not text:
             return None
         text = text.replace("\n", " ")
-        return embeddings_model.embed_query(text)
+        return embed_with_retry(embeddings_model.embed_query, text, attempts=3)
     except Exception as e:
         print(f"Error calling the embedding API: {e}")
         return None
@@ -2622,7 +2623,7 @@ def query_vector_store(query: str):
     if index is None or embeddings_model is None:
         return "Pinecone not initialized. Check PINECONE_API_KEY and PINECONE_INDEX_NAME."
     try:
-        query_vector = embeddings_model.embed_query(query)
+        query_vector = embed_with_retry(embeddings_model.embed_query, query, attempts=3)
 
         all_results = []
         namespaces = ["engineering-standards", "dynamic-experience"]

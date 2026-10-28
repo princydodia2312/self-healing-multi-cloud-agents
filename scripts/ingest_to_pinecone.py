@@ -14,12 +14,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root →
 # Shared token-budget guard (utils is on sys.path via PYTHONPATH=/app in the image; for local runs
 # the repo root is the CWD). Import defensively so the ingest still runs if utils is unavailable.
 try:
-    from utils.embedding_budget import EMBED_TOKEN_SAFE_CEILING, count_tokens_detail
+    from utils.embedding_budget import EMBED_TOKEN_SAFE_CEILING, count_tokens_detail, embed_with_retry
 except Exception:  # pragma: no cover - fallback for odd sys.path setups
     EMBED_TOKEN_SAFE_CEILING = 8000
 
     def count_tokens_detail(text):
         return (len(text) + 3) // 4, False
+
+    def embed_with_retry(embed_fn, text, **_kwargs):
+        return embed_fn(text)
 
 # --- LOGGING CONFIGURATION ---
 logging.basicConfig(
@@ -55,9 +58,12 @@ except Exception as e:
     raise
 
 def get_embedding(text):
-    """Generates a document embedding with the configured EMBED_MODEL."""
+    """Generates a document embedding with the configured EMBED_MODEL.
+
+    Waits and retries on rate limits (the free Gemini tier allows 30k embed tokens/minute, less
+    than the whole knowledge base), so a full ingest completes instead of failing on file 8."""
     try:
-        return embeddings.embed_documents([text])[0]
+        return embed_with_retry(lambda t: embeddings.embed_documents([t])[0], text, log=logger.warning)
     except Exception as e:
         logger.error(f"Error generating embedding: {e}")
         return None

@@ -11,6 +11,8 @@ Pinecone while the edit looked applied. This module makes the limit explicit so:
 """
 from __future__ import annotations
 
+import re
+import time
 from pathlib import Path
 
 # text-embedding-3-small hard per-input limit (what the OpenAI API rejects at). tiktoken's cl100k_base
@@ -49,3 +51,32 @@ def check_file(path: str | Path) -> tuple[int, bool]:
     (not the raw API limit) because tiktoken under-counts vs the API — see EMBED_TOKEN_SAFE_CEILING."""
     tokens = count_tokens(Path(path).read_text(encoding="utf-8"))
     return tokens, tokens <= EMBED_TOKEN_SAFE_CEILING
+
+
+# ── Rate-limit retry (free Gemini tier: 30k embed tokens / minute) ────────────────────────────
+
+
+def retry_delay_seconds(err: Exception, default: float = 60.0) -> float | None:
+    """Seconds to wait before retrying if `err` is a rate-limit (HTTP 429) error, else None.
+
+    Uses the server's own hint ("Please retry in 36.2s" / retryDelay '36s') when present.
+    """
+    msg = str(err)
+    if "429" not in msg and "RESOURCE_EXHAUSTED" not in msg and "rate limit" not in msg.lower():
+        return None
+    m = re.search(r"retry in ([0-9.]+)s", msg) or re.search(r"retryDelay'?\"?:\s*'?\"?(\d+)s", msg)
+    return min(float(m.group(1)) + 2.0, 120.0) if m else default
+
+
+def embed_with_retry(embed_fn, text, attempts: int = 5, sleep=time.sleep, log=None):
+    """Call embed_fn(text), waiting and retrying on rate-limit errors. Other errors raise at once."""
+    for i in range(attempts):
+        try:
+            return embed_fn(text)
+        except Exception as e:
+            delay = retry_delay_seconds(e)
+            if delay is None or i == attempts - 1:
+                raise
+            if log:
+                log(f"Rate limited by the embedding API — waiting {delay:.0f}s (retry {i + 2}/{attempts})")
+            sleep(delay)
