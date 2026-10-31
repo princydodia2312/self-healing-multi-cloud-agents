@@ -117,6 +117,26 @@
       "evidence_gate": "pass",
       "source": "documented failure class (SSM via IRSA — 'Missing it -> cloud_get() returns None -> host name None error') — offline-probe gap found 2026-07-15",
       "notes": "cloud_get() returned None (IRSA missing ssm:GetParameter, or unset GCP/Azure env var) so db_host is the literal 'None'. The plumbing is the IAM policy / K8s secret, not the script — infra. 'host name \"none\"' is a _CI_INFRA_SIGNATURE."
+    },
+    {
+      "id": "script_mongo_objectid_to_parquet",
+      "failure_class": "script-logic:ArrowTypeError",
+      "provider": "aws",
+      "trigger_log": "Traceback (most recent call last):\n  File \"/app/scripts/pipe_shop_orders_to_s3.py\", line 141, in <module>\n    chunk.to_parquet(f\"{partition_uri}part_{i}.parquet\", engine=\"pyarrow\", compression=\"snappy\", index=False, storage_options=dict())\n  File \"pyarrow/array.pxi\", line 365, in pyarrow.lib.array\npyarrow.lib.ArrowTypeError: (\"Expected bytes, got a 'ObjectId' object\", 'Conversion failed for column _id with type object')\nError: Process completed with exit code 1.",
+      "expected_owner": "architect",
+      "evidence_gate": "pass",
+      "source": "documented failure class (MongoDB extraction standard: BSON ObjectId)",
+      "notes": "A MongoDB _id (BSON ObjectId) reached to_parquet. ArrowTypeError contains the 'typeerror' script signature -> architect (drop _id or .astype(str))."
+    },
+    {
+      "id": "script_mongo_missing_nested_field",
+      "failure_class": "script-logic:KeyError",
+      "provider": "aws",
+      "trigger_log": "Traceback (most recent call last):\n  File \"/app/scripts/pipe_shop_orders_to_s3.py\", line 97, in <module>\n    chunk['customer_city'] = chunk['customer_city'].fillna('UNKNOWN')\n  File \"/usr/local/lib/python3.12/site-packages/pandas/core/frame.py\", line 4102, in __getitem__\n    indexer = self.columns.get_loc(key)\nKeyError: 'customer_city'\nError: Process completed with exit code 1.",
+      "expected_owner": "architect",
+      "evidence_gate": "pass",
+      "source": "documented failure class (MongoDB extraction standard: missing columns)",
+      "notes": "No document in the batch had customer.city, so json_normalize produced no column. KeyError -> architect (add missing EXPECTED columns as None before the rules)."
     }
   ]
 }

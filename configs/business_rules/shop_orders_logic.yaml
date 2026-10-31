@@ -1,0 +1,51 @@
+# Business Rules: Shop Orders Pipeline (MongoDB → S3)
+# Applied to the FLATTENED rows: one row per order item, with the order + customer fields
+# repeated on every item row (order_id, order_date, customer_name, customer_city, product, price, qty).
+#
+# on_failure_action values:
+#   DROP_RECORD        — Remove the offending row entirely.
+#   EXCLUDE_AND_LOG    — Remove the row and log it as a warning.
+#   DEFAULT_VALUE      — Replace the invalid value with the specified default.
+#   FLAG_AS_SUSPICIOUS — Keep the row but mark it with a boolean flag column.
+
+domain: "ecommerce"
+domain_description: "Online shop orders: nested customer details and a list of purchased items."
+
+quality_standards:
+
+  - capability: "completeness_enforcement"
+    description: "Every order item needs an order identifier and a product name."
+    target_criteria: "The order identifier column (order_id) and the item product name column (product)."
+    logic: "Both fields must not be NULL or empty string."
+    on_failure_action: "DROP_RECORD"
+
+  - capability: "monetary_integrity"
+    description: "Item prices must be real positive amounts (text prices like '500' are converted first)."
+    target_criteria: "The item price column (price)."
+    logic: "Coerce to numeric (non-numbers → NULL), then value must be > 0.0."
+    on_failure_action: "DROP_RECORD"
+
+  - capability: "quantity_validity"
+    description: "An order item must have a positive quantity."
+    target_criteria: "The item quantity column (qty)."
+    logic: "Coerce to numeric, then value must be > 0."
+    on_failure_action: "EXCLUDE_AND_LOG"
+
+  - capability: "temporal_validity"
+    description: "Order dates must be valid dates and not in the future."
+    target_criteria: "The order date column (order_date)."
+    logic: "Parse as a date (invalid → NULL); value must be present and <= current timestamp."
+    on_failure_action: "EXCLUDE_AND_LOG"
+
+  - capability: "location_default"
+    description: "Orders without a customer city are kept, grouped under a placeholder city."
+    target_criteria: "The customer city column (customer_city)."
+    logic: "Value must not be NULL or empty. Default to 'UNKNOWN' if missing."
+    on_failure_action: "DEFAULT_VALUE"
+    default: "UNKNOWN"
+
+  - capability: "bulk_order_outlier"
+    description: "Very large item quantities usually mean a data-entry error or a reseller."
+    target_criteria: "The item quantity column (qty)."
+    logic: "Value must be < 100 per order item."
+    on_failure_action: "FLAG_AS_SUSPICIOUS"

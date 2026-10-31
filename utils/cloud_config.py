@@ -57,6 +57,10 @@ _ENV_FALLBACKS: dict[tuple[str, str, str], str] = {
     ("aws", "mysql",    "db_user"):     "MYSQL_DB_USER",
     ("aws", "mysql",    "db_password"): "MYSQL_DB_PASSWORD",
     ("aws", "mysql",    "db_name"):     "MYSQL_DB_NAME",
+    # MongoDB source (shop_orders): one connection-string secret + the database name.
+    # SSM: /multi-cloud-self-healing-agent/aws/mongo_uri (SecureString) and .../mongo_db_name.
+    ("aws", "mongodb",  "mongo_uri"):     "MONGO_URI",
+    ("aws", "mongodb",  "mongo_db_name"): "MONGO_DB_NAME",
 }
 
 # ── Backward-compatibility ────────────────────────────────────────────────────

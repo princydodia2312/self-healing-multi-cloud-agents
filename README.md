@@ -41,7 +41,8 @@ flowchart LR
 
 | Big Data concept | How it is implemented |
 |---|---|
-| **Ingestion** | Chunked SQLAlchemy reads from RDS PostgreSQL. The whole table is never loaded into memory at once. |
+| **Ingestion** | Chunked SQLAlchemy reads from RDS PostgreSQL, and batched `pymongo` reads from MongoDB (500 documents at a time). The whole source is never loaded into memory at once. |
+| **Variety (structured + semi-structured)** | Two sources: a fixed-schema PostgreSQL table (`eu_sales`) and schema-less nested JSON documents in MongoDB (`shop_orders`, see §3b). |
 | **Data quality / cleansing** | Six rules in [`configs/business_rules/sales_logic.yaml`](configs/business_rules/sales_logic.yaml), compiled into real pandas conditions (see §3) |
 | **Columnar storage** | Apache **Parquet** with **snappy** compression (PyArrow + s3fs) |
 | **Partitioning** | Hive-style `s3://eu-sales-insights-data-princy2312/processed/run_date=<date>/` |
@@ -66,6 +67,41 @@ The source table is deliberately polluted by [`scripts/seed_chaos.py`](scripts/s
 | `quantity_validity` | `quantity` | > 0 | `FLAG_AS_SUSPICIOUS` |
 
 Rejection counts per rule are exported as metrics, so data quality shows up in Grafana.
+
+## 3b. Second pipeline: MongoDB → S3 (`shop_orders`, semi-structured data)
+
+A MongoDB collection has no fixed schema. Each order document nests a customer object and holds a list of items, and the seeder makes them inconsistent on purpose:
+
+```json
+{ "_id": ObjectId("6721a9f..."), "order_id": "ORD-482193", "order_date": "2026-10-20T11:02:00",
+  "customer": { "name": "Asha", "email": "...", "city": "Pune" },
+  "items": [ { "product": "Laptop", "price": 55000, "qty": 1 },
+             { "product": "Mouse",  "price": "500", "qty": 2 } ] }
+```
+
+The pipeline reads the collection in batches, **flattens** every document into one row per item (`pd.json_normalize` with `record_path="items"`), cleans it, and writes the same partitioned Parquet layout as `eu_sales`:
+
+| order_id | order_date | customer_name | customer_city | product | price | qty | is_suspicious |
+|---|---|---|---|---|---|---|---|
+| ORD-482193 | 2026-10-20 | Asha | Pune | Laptop | 55000.0 | 1 | false |
+| ORD-482193 | 2026-10-20 | Asha | Pune | Mouse | 500.0 | 2 | false |
+
+Before generating code, the Architect calls `read_data_schema(db_type="mongodb")`. This samples 200 documents and **infers** the schema: every field path, the types seen, how often it is present, and warnings such as "MIXED TYPES" or "BSON ObjectId" ([`utils/mongo_schema.py`](utils/mongo_schema.py)). The extraction rules are in [`knowledge_base/engineering/mongodb_extraction_standard.md`](knowledge_base/engineering/mongodb_extraction_standard.md).
+
+Rules ([`configs/business_rules/shop_orders_logic.yaml`](configs/business_rules/shop_orders_logic.yaml)), applied to the flattened rows:
+
+| Rule | Target | Logic | On failure | Messy data the seeder injects |
+|---|---|---|---|---|
+| `completeness_enforcement` | `order_id`, `product` | present, not empty | `DROP_RECORD` | missing order IDs / product names |
+| `monetary_integrity` | `price` | numeric (text converted first) and > 0 | `DROP_RECORD` | `-10`, `0`, `"abc"`, `"500"` |
+| `quantity_validity` | `qty` | > 0 | `EXCLUDE_AND_LOG` | `-1`, `0`, `"2"`, missing |
+| `temporal_validity` | `order_date` | valid date, not in the future | `EXCLUDE_AND_LOG` | `"2030-01-01"`, `"not-a-date"`, missing |
+| `location_default` | `customer_city` | present | `DEFAULT_VALUE` → `UNKNOWN` | customers without a city |
+| `bulk_order_outlier` | `qty` | < 100 | `FLAG_AS_SUSPICIOUS` | quantities of 500 |
+
+The messy documents also produce new failures for the self-healing loop: an `ObjectId` reaching Parquet (`ArrowTypeError`), a field missing from a whole batch (`KeyError`), or text compared with numbers (`TypeError`). The eval corpus includes the first two.
+
+MongoDB runs on the free **MongoDB Atlas M0** tier, so it costs nothing. The connection string is stored in SSM as an encrypted SecureString and read with `cloud_get`, exactly like the PostgreSQL credentials.
 
 ## 4. The agents and the self-healing loop
 
@@ -127,13 +163,13 @@ Safety limits:
 | Path | Contents |
 |---|---|
 | `agents/`, `graph.py`, `main.py` | The multi-agent system (LangGraph nodes, tools, prompts, deterministic codegen) |
-| `configs/` | The `eu_sales` pipeline: objective, source DB, business rules, S3 target |
-| `knowledge_base/` | Engineering standards used for RAG (Python, SQL, Grafana, CI/CD, Terraform-S3, Docker, K8s) |
+| `configs/` | The `eu_sales` (PostgreSQL) and `shop_orders` (MongoDB) pipelines: objective, source DB, business rules, S3 target |
+| `knowledge_base/` | Engineering standards used for RAG (Python, MongoDB extraction, SQL, Grafana, CI/CD, Terraform-S3, Docker, K8s) |
 | `bootstrap/aws/` | One-time baseline Terraform: EKS, RDS PostgreSQL, ECR, S3 state, SSM parameters |
-| `scripts/` | `seed_chaos.py` (dirty data), `ingest_to_pinecone.py` (RAG sync), `export_bootstrap_outputs.py` |
-| `utils/` | Config/credential resolution, rules loader, Trino client, observability, NL parser, cost estimate |
+| `scripts/` | `seed_chaos.py` (dirty rows for PostgreSQL, messy documents for MongoDB), `ingest_to_pinecone.py` (RAG sync), `export_bootstrap_outputs.py` |
+| `utils/` | Config/credential resolution, MongoDB schema inference, rules loader, Trino client, observability, NL parser, cost estimate |
 | `streamlit_app.py` | Web UI: describe a pipeline in plain English, upload a dataset, run the sample pipeline, query Trino, view metrics |
-| `evals/` | Offline self-heal eval: a corpus of 10 real failure classes scored against the real Medic routing + evidence gate |
+| `evals/` | Offline self-heal eval: a corpus of 12 real failure classes scored against the real Medic routing + evidence gate |
 | `policy/` | Security gate for generated infrastructure + unsafe test fixtures |
 | `tests/` | Hermetic unit tests (no cloud, no credentials) |
 
@@ -163,6 +199,16 @@ make run p=eu_sales       # agents build, deploy and (if needed) heal the pipeli
 make streamlit            # web UI on http://localhost:8501
 ```
 
+**MongoDB pipeline (`shop_orders`).** Create a free Atlas M0 cluster (AWS, Frankfurt), add `MONGO_URI` and `MONGO_DB_NAME=shop_raw` to `.env`, then:
+
+```bash
+make mongo-ssm                 # store the connection string in SSM (encrypted) for the EKS job
+make chaos target=shop_orders  # insert 500 messy order documents into shop_raw.raw_orders
+make run p=shop_orders         # agents build, deploy and heal the MongoDB → S3 pipeline
+```
+
+Run one pipeline at a time. Both pipelines share one cluster and one set of generated files (`scripts/`, `sql/`, `k8s/`, ...), so the most recent run's files are the ones in the repo.
+
 The same steps are available from GitHub Actions in `run_agent.yml` (manual dispatch with bootstrap, knowledge-base sync, chaos and pipeline inputs).
 
 **Free LLM option (Google Gemini).** The project runs on the Gemini API free tier as well as on OpenAI. One setting in `.env` switches the agents, the Streamlit UI and the RAG embeddings together:
@@ -170,10 +216,11 @@ The same steps are available from GitHub Actions in `run_agent.yml` (manual disp
 ```bash
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=...          # free key from https://aistudio.google.com/apikey
-# defaults: agents gemini-3.8-flash (falls back to gemini-3.6-flash when overloaded) · NL/UI gemini-3.5-flash-lite · embeddings gemini-embedding-2 (1536-dim)
+# defaults: agents gemini-3.8-flash, falling back to gemini-3.6-flash → gemini-2.5-flash → gemini-3.5-flash-lite
+#           NL/UI gemini-3.5-flash-lite · embeddings gemini-embedding-2 (1536-dim)
 ```
 
-To use OpenAI instead, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. After switching provider, run `make ingest` again, because embeddings from different models can't be mixed in one index. The free tier has per-minute and per-day request limits (your current limits are shown in AI Studio), and Google may use free-tier prompts to improve its products.
+To use OpenAI instead, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. After switching provider, run `make ingest` again, because embeddings from different models can't be mixed in one index. The free tier allows only about **20 requests per day per model** (reset at midnight Pacific time; your limits are shown in AI Studio), while one agent run needs roughly 40–80 model calls. That's why the agents fall back through several models, each with its own daily quota. Google may use free-tier prompts to improve its products.
 
 > **Cost warning.** The AWS baseline (EKS + RDS) bills by the hour, about $230/month while running (`make cost`). Use `make aws-pause` between sessions and `make aws-resume` before a demo. Tear everything down with `make destroy-aws` or the `destroy.yml` workflow after the evaluation.
 
@@ -219,9 +266,10 @@ The test suite covers:
 - the generated-code validators
 - golden-file tests for every deterministic artifact (Dockerfile, K8s manifests, Grafana dashboard, deploy workflow)
 - credential resolution
+- MongoDB schema inference, messy-document generation and the `shop_orders` config
 - the state lifecycle
 
-The eval harness replays 10 failure cases (script bugs, Trino DDL errors, S3/IAM and SSM failures, and hallucination traps) against the real Medic routing and evidence gate. Both currently score 100%.
+The eval harness replays 12 failure cases (script bugs including two MongoDB ones, Trino DDL errors, S3/IAM and SSM failures, and hallucination traps) against the real Medic routing and evidence gate. Both currently score 100%.
 
 ## 9. Limitations and future work
 

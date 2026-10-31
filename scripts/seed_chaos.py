@@ -59,6 +59,94 @@ def create_chaos_data(target, n_rows=100):
     return pd.DataFrame()
 
 
+# ── MongoDB (shop_orders): nested, deliberately messy order documents ──────────────────────────
+
+MONGO_COLLECTION = "raw_orders"
+_PRODUCTS = ["Laptop", "Mouse", "Keyboard", "Monitor", "Headphones", "USB Cable", "Webcam", "Desk Lamp"]
+_CITIES = ["Pune", "Mumbai", "Delhi", "Bengaluru", "Chennai", "Hyderabad", "Ahmedabad", "Jaipur"]
+
+
+def _messy(rng, clean, dirty_options, p_dirty):
+    """Return `clean` most of the time, otherwise one of the dirty variants (or omit via _MISSING)."""
+    return clean if rng.random() >= p_dirty else dirty_options[rng.integers(len(dirty_options))]
+
+
+_MISSING = object()  # sentinel: leave the field OUT of the document entirely
+
+
+def create_mongo_chaos_docs(n_docs=500, seed=None):
+    """Generate e-commerce order documents that exercise every shop_orders business rule:
+    missing order_id/product, prices as negative / zero / text, bad or missing quantities,
+    future / invalid / missing dates, customers without a city, bulk quantities (>= 100),
+    orders with no items list, and the same field stored with different types."""
+    rng = np.random.default_rng(seed)
+    docs = []
+    for _ in range(n_docs):
+        doc = {}
+        oid = _messy(rng, f"ORD-{rng.integers(100000, 999999)}", [_MISSING, "", None], 0.05)
+        if oid is not _MISSING:
+            doc["order_id"] = oid
+        date = _messy(rng, fake.date_time_this_year().isoformat(),
+                      ["2030-01-01T10:00:00", "not-a-date", _MISSING], 0.12)
+        if date is not _MISSING:
+            doc["order_date"] = date
+        customer = {"name": fake.name(), "email": fake.email()}
+        city = _messy(rng, _CITIES[rng.integers(len(_CITIES))], [_MISSING, None, ""], 0.15)
+        if city is not _MISSING:
+            customer["city"] = city
+        doc["customer"] = customer
+
+        if rng.random() < 0.04:          # order with no items list at all
+            docs.append(doc)
+            continue
+        items = []
+        for _ in range(int(rng.integers(1, 4))):
+            item = {}
+            product = _messy(rng, _PRODUCTS[rng.integers(len(_PRODUCTS))], [_MISSING, None], 0.04)
+            if product is not _MISSING:
+                item["product"] = product
+            good_price = round(float(rng.uniform(100, 60000)), 2)
+            price = _messy(rng, good_price, [-10.0, 0, "abc", str(int(good_price)), _MISSING], 0.15)
+            if price is not _MISSING:
+                item["price"] = price
+            qty = _messy(rng, int(rng.integers(1, 6)), [-1, 0, "2", 500, _MISSING], 0.15)
+            if qty is not _MISSING:
+                item["qty"] = qty
+            items.append(item)
+        doc["items"] = items
+        docs.append(doc)
+    return docs
+
+
+def seed_mongo_chaos(n_docs=500):
+    """REPLACE the shop_orders source collection with freshly generated messy documents."""
+    from pymongo import MongoClient
+
+    uri = cloud_get("aws", "mongo_uri", db_type="mongodb")
+    db_name = cloud_get("aws", "mongo_db_name", db_type="mongodb") or "shop_raw"
+    if not uri:
+        logger.error("❌ MongoDB URI not found — set MONGO_URI in .env (or SSM mongo_uri).")
+        sys.exit(1)
+    client = MongoClient(uri, serverSelectionTimeoutMS=20000)
+    try:
+        client.admin.command("ping")   # fail fast on a bad URI / Atlas network access list
+        coll = client[db_name][MONGO_COLLECTION]
+        prev = coll.estimated_document_count()
+        if prev:
+            logger.warning(f"♻️  REPLACING '{db_name}.{MONGO_COLLECTION}': dropping {prev} existing document(s). "
+                           "Destructive by design (chaos reset).")
+        coll.drop()
+        docs = create_mongo_chaos_docs(n_docs)
+        coll.insert_many(docs)
+        logger.info(f"✅ Seeded {len(docs)} messy order documents into '{db_name}.{MONGO_COLLECTION}'")
+    except Exception as e:
+        # Never print the URI (it contains the password).
+        logger.error(f"❌ FATAL ERROR seeding MongoDB: {type(e).__name__}: {str(e).replace(uri, '<MONGO_URI>')}")
+        sys.exit(1)
+    finally:
+        client.close()
+
+
 def build_engine(db_type, target="eu_sales"):
     """
     Create a SQLAlchemy engine for the source database.
@@ -120,6 +208,10 @@ def seed_dataframe_to_source(df: pd.DataFrame, slug: str, cloud: str = "aws") ->
 
 
 def seed_chaos(target_arg, db_type, n_rows):
+    if target_arg == "shop_orders" or db_type == "mongodb":
+        seed_mongo_chaos(n_rows)
+        return
+
     targets_to_run = TARGETS if target_arg == "all" else [target_arg]
 
     for target in targets_to_run:
@@ -140,9 +232,9 @@ def seed_chaos(target_arg, db_type, n_rows):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Chaos data seeder for the self-healing demo")
-    parser.add_argument("--target", choices=TARGETS + ["all"], default="eu_sales",
-                        help="Pipeline whose source table to seed")
-    parser.add_argument("--db-type", choices=["sqlite", "postgres", "mysql"], default="postgres",
+    parser.add_argument("--target", choices=TARGETS + ["shop_orders", "all"], default="eu_sales",
+                        help="Pipeline whose source to seed (shop_orders = MongoDB documents)")
+    parser.add_argument("--db-type", choices=["sqlite", "postgres", "mysql", "mongodb"], default="postgres",
                         help="Database engine to use")
     parser.add_argument("--rows", type=int, default=100, help="Number of rows to generate")
     args = parser.parse_args()

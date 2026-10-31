@@ -1,0 +1,49 @@
+aws_setup:
+  aws_account_id: "698467950467"
+  # Must END with "-insights-data": the shared pipelines IRSA role (bootstrap/aws/iam.tf) grants
+  # S3 access to arn:aws:s3:::*-insights-data — the account suffix goes in FRONT here.
+  bucket_name: princy2312-shop-orders-insights-data
+  ecr_repository_name: eu-sales-pipeline-repo   # the single bootstrap ECR repo (images are tagged per commit)
+  eks_cluster_name: multi-cloud-agent-cluster
+  # Shared IRSA role for additional pipelines; trusts any analytics/*-insights-sa ServiceAccount.
+  iam_role_name: multi-cloud-pipelines-irsa
+  k8s_namespace: analytics
+  k8s_service_account_name: shop-orders-insights-sa
+  lock_table: terraform-state-lock
+  region: eu-central-1
+  state_bucket: multi-cloud-agent-tf-state-bucket-princy2312
+  state_key: terraform/shop-orders-insights/terraform.tfstate
+business_rules_config: configs/business_rules/shop_orders_logic.yaml
+cloud_provider: aws
+data_domain: ecommerce
+owner: analytics_team
+pipeline_id: pipe_shop_orders_to_s3
+priority: high
+project_folder_name: multi-cloud-self-healing-agent
+project_name: shop-orders-insights
+project_structure:
+  data_dir: data
+  monitoring_path: dashboards/monitoring_specs.json
+  python_dir: scripts
+  python_script_path: scripts/pipe_shop_orders_to_s3.py
+  requirements_path: requirements.txt
+  sql_dir: sql
+  trino_setup_path: sql/setup_trino.sql
+shared_services:
+  grafana:
+    namespace: monitoring
+    url: http://grafana.monitoring.svc.cluster.local
+  trino:
+    catalog: hive
+    host: trino.analytics.svc.cluster.local
+    port: 8080
+    schema: shop_orders
+    table_name: pipe_shop_orders_to_s3
+source_config: configs/databases/mongo_shop.yaml
+target_infra_config: configs/infra/aws_s3.yaml
+update_frequency: daily
+required_artifacts:
+  - scripts/{pipeline_name}.py
+  - sql/setup_trino.sql
+  - dashboards/monitoring_specs.json
+  - requirements.txt

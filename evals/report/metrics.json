@@ -1,14 +1,14 @@
 {
-  "corpus_cases": 10,
+  "corpus_cases": 12,
   "routing": {
-    "total": 7,
-    "correct": 7,
+    "total": 9,
+    "correct": 9,
     "accuracy_pct": 100.0,
     "failures": []
   },
   "evidence_gate": {
-    "total": 10,
-    "correct": 10,
+    "total": 12,
+    "correct": 12,
     "accuracy_pct": 100.0,
     "failures": []
   },
@@ -37,11 +37,17 @@
       "gate_total": 1,
       "gate_correct": 1
     },
-    "script-logic:KeyError": {
+    "script-logic:ArrowTypeError": {
       "routing_total": 1,
       "routing_correct": 1,
       "gate_total": 1,
       "gate_correct": 1
+    },
+    "script-logic:KeyError": {
+      "routing_total": 2,
+      "routing_correct": 2,
+      "gate_total": 2,
+      "gate_correct": 2
     },
     "script-logic:TypeError": {
       "routing_total": 1,

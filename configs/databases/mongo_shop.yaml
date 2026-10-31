@@ -1,0 +1,9 @@
+db_id: "mongo_shop_orders"
+db_type: "mongodb"
+connection_type: "mongodb_atlas"
+# One connection-string secret (contains the password) + the database name.
+# Resolved by cloud_get(): SSM /multi-cloud-self-healing-agent/aws/mongo_uri → .bootstrap_outputs.json → env.
+env_var_uri: "MONGO_URI"
+env_var_name: "MONGO_DB_NAME"
+default_table: "raw_orders"   # the MongoDB COLLECTION (semi-structured order documents)
+description: "MongoDB Atlas (M0 free tier) — nested e-commerce order documents (customer object + items array)."

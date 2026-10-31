@@ -18,6 +18,8 @@ dependencies = [
     "pandas>=3.0.2",
     "pinecone>=8.1.2",
     "psycopg2-binary>=2.9.12",
+    # MongoDB source (shop_orders pipeline: semi-structured order documents)
+    "pymongo>=4.10",
     "pydantic>=2.0.0",
     "python-dotenv>=1.2.2",
     "python-terraform>=0.10.1",

@@ -53,9 +53,17 @@ ingest: ## Sync the Knowledge Base (engineering standards) to Pinecone for RAG
 	$(PYTHON) $(SCRIPTS_DIR)/ingest_to_pinecone.py --path knowledge_base
 
 .PHONY: chaos
-chaos: ## Seed dirty data into the source DB. Usage: make chaos [db_type=postgres|sqlite] [rows=100]
-	@echo "Seeding chaos into eu_sales (db_type=$(if $(db_type),$(db_type),postgres))..."
-	$(PYTHON) $(SCRIPTS_DIR)/seed_chaos.py --target eu_sales --db-type $(if $(db_type),$(db_type),postgres) --rows $(if $(rows),$(rows),100)
+chaos: ## Seed dirty data. Usage: make chaos [target=eu_sales|shop_orders] [db_type=postgres|sqlite|mongodb] [rows=100]
+	@echo "Seeding chaos into $(if $(target),$(target),eu_sales)..."
+	$(PYTHON) $(SCRIPTS_DIR)/seed_chaos.py --target $(if $(target),$(target),eu_sales) --db-type $(if $(db_type),$(db_type),$(if $(filter shop_orders,$(target)),mongodb,postgres)) --rows $(if $(rows),$(rows),$(if $(filter shop_orders,$(target)),500,100))
+
+.PHONY: mongo-ssm
+mongo-ssm: ## Store MONGO_URI / MONGO_DB_NAME from .env in SSM (SecureString) so the EKS pipeline can read them
+	@set -a; . ./.env; set +a; \
+	test -n "$$MONGO_URI" || { echo "MONGO_URI is not set in .env"; exit 1; }; \
+	aws ssm put-parameter --name /multi-cloud-self-healing-agent/aws/mongo_uri --type SecureString --value "$$MONGO_URI" --overwrite >/dev/null && \
+	aws ssm put-parameter --name /multi-cloud-self-healing-agent/aws/mongo_db_name --type String --value "$${MONGO_DB_NAME:-shop_raw}" --overwrite >/dev/null && \
+	echo "✅ SSM: mongo_uri (SecureString) + mongo_db_name stored"
 
 .PHONY: run
 run: ## Run the Self-Healing Agent. Usage: make run [p=eu_sales]
@@ -67,6 +75,12 @@ demo: ## Full AWS demo: ingest standards + seed chaos + run eu_sales
 	@make ingest
 	@make chaos
 	@make run p=eu_sales
+
+.PHONY: demo-mongo
+demo-mongo: ## MongoDB demo: SSM secret + seed 500 messy documents + run shop_orders
+	@make mongo-ssm
+	@make chaos target=shop_orders
+	@make run p=shop_orders
 
 .PHONY: streamlit ui
 streamlit ui: ## Launch the Streamlit UI → http://localhost:8501

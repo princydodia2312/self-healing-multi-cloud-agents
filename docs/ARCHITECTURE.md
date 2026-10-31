@@ -45,7 +45,7 @@ RDS PostgreSQL ──pandas (chunked)──▶ business rules ──▶ snappy P
 | Compute | EKS (pipeline runs as a Kubernetes `Job`) |
 | Storage | S3: `s3://eu-sales-insights-data-princy2312/processed/run_date=<date>/` |
 | Registry | ECR |
-| Source DB | RDS PostgreSQL (`raw_eu_sales`) |
+| Source DB | RDS PostgreSQL (`raw_eu_sales`, pipeline `eu_sales`) or MongoDB Atlas (`raw_orders` documents, pipeline `shop_orders` — flattened with `pd.json_normalize`, schema inferred by `read_data_schema`) |
 | Catalog / SQL | Trino `hive` catalog backed by AWS Glue |
 | Identity | IRSA: the pipeline's ServiceAccount assumes an IAM role (no static keys in the pod) |
 | Image tag | `:${{ github.sha }}`, written into `job.yaml` by the deploy workflow |

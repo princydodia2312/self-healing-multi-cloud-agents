@@ -127,6 +127,8 @@ _DB_DRIVER = {
     "postgresql": "psycopg2-binary",
     "mysql": "pymysql",
     "mssql": "pyodbc",
+    "mongodb": "pymongo",
+    "mongo": "pymongo",
 }
 
 

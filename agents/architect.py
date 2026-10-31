@@ -176,6 +176,11 @@ def architect_node(state: AgentState, config: RunnableConfig = None):
     # Detected from the infra provider; every databricks-specific branch below is guarded by it,
     # so the AWS/Azure/GCP path is completely unaffected.
     is_databricks = infra_conf.get("provider", "").lower() == "databricks"
+    # Semi-structured source (MongoDB): the script additionally follows the MongoDB extraction
+    # standard (flatten nested documents, ObjectId, mixed types) — retrieved as its own key.
+    is_mongo_source = str(
+        state.get("raw_configs", {}).get("database", {}).get("db_type", "")
+    ).lower() in ("mongodb", "mongo")
 
     # 3. CONTEXT GENERATION
     try:
@@ -207,6 +212,8 @@ def architect_node(state: AgentState, config: RunnableConfig = None):
         # (agents/codegen.py). The LLM keeps the two judgment artifacts — the pipeline
         # script (python standard) and the Trino DDL (trino standard).
         required_knowledge_keys = ["arch_standard_trino", "arch_standard_python"]
+        if is_mongo_source:
+            required_knowledge_keys.append("arch_standard_mongodb")
     is_fix_mode = state.get("medic_fix_requested", False) or state.get("last_agent") == "medic"
     has_all_standards = all(key in collected_specs for key in required_knowledge_keys)
     schema_discovered = state.get("schema_discovered", False)
@@ -247,6 +254,11 @@ def architect_node(state: AgentState, config: RunnableConfig = None):
             "Use the exact query strings defined under 'KNOWLEDGE RETRIEVAL' in your instructions. "
             "Do NOT query for any other topic."
         )
+        if "arch_standard_mongodb" in missing_keys:
+            phase_instruction += (
+                " For arch_standard_mongodb use query=\"MONGODB EXTRACTION STANDARD semi-structured "
+                "source: pymongo batch flatten json_normalize record_path ObjectId mixed types\"."
+            )
         logger.info(f"⚠️ GATE: Discovery Phase. Missing keys: {missing_keys}")
     elif not schema_discovered:
         # Phase 2 — Schema: read the actual DB table before writing any code
@@ -362,6 +374,8 @@ def architect_node(state: AgentState, config: RunnableConfig = None):
 
             if needs_python and "arch_standard_python" in collected_specs:
                 system_prompt += f"\n### arch_standard_python\n{collected_specs['arch_standard_python']}\n"
+            if needs_python and "arch_standard_mongodb" in collected_specs:
+                system_prompt += f"\n### arch_standard_mongodb\n{collected_specs['arch_standard_mongodb']}\n"
             if needs_sql and "arch_standard_trino" in collected_specs:
                 system_prompt += f"\n### arch_standard_trino\n{collected_specs['arch_standard_trino']}\n"
 
@@ -424,6 +438,10 @@ def architect_node(state: AgentState, config: RunnableConfig = None):
                                 collected_specs["arch_standard_databricks"] = str(result)
                                 matched = True
                                 logger.info("🎯 Smart Mapping: Databricks Spark Standard Secured.")
+                        elif any(x in q for x in ["mongodb", "mongo", "json_normalize", "objectid"]):
+                            collected_specs["arch_standard_mongodb"] = str(result)
+                            matched = True
+                            logger.info("🎯 Smart Mapping: MongoDB Extraction Standard Secured.")
                         elif any(x in q for x in ["python", "pandas", "cloud_get", "storage_options", "to_parquet"]):
                             collected_specs["arch_standard_python"] = str(result)
                             matched = True

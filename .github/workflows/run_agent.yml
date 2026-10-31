@@ -11,6 +11,7 @@ on:
         options:
           - skip
           - eu_sales
+          - shop_orders
         default: eu_sales
 
       bootstrap_cloud:
@@ -46,6 +47,7 @@ on:
         type: choice
         options:
           - eu_sales
+          - shop_orders
         default: eu_sales
 
       chaos_db_type:
@@ -55,6 +57,7 @@ on:
         options:
           - postgres
           - sqlite
+          - mongodb
         default: postgres
 
       chaos_rows:

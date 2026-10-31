@@ -2311,12 +2311,17 @@ launch_nl = False
 
 with tab_existing:
     st.markdown(
-        '<p style="color:#94a3b8; margin-bottom:0.5rem;">Run the pre-built reference pipeline: '
+        '<p style="color:#94a3b8; margin-bottom:0.5rem;">Run a pre-built reference pipeline. Structured example: '
         'EU sales orders from RDS PostgreSQL → cleaned Parquet on S3 (partitioned by run_date) '
         '→ Trino → Grafana.</p>',
         unsafe_allow_html=True,
     )
-    existing_choice = st.selectbox("Select a sample pipeline", ["eu_sales"])
+    _SAMPLE_PIPELINES = {
+        "eu_sales": "Structured: RDS PostgreSQL table → Parquet on S3",
+        "shop_orders": "Semi-structured: MongoDB order documents (nested customer + items array) → flattened Parquet on S3",
+    }
+    existing_choice = st.selectbox("Select a sample pipeline", list(_SAMPLE_PIPELINES),
+                                   format_func=lambda k: f"{k} — {_SAMPLE_PIPELINES[k]}")
     st.markdown(
         '<span style="color:#64748b;font-size:0.85rem;">Target: 🟠 AWS (EKS + S3)</span>',
         unsafe_allow_html=True,
