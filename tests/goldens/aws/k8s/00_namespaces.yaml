@@ -14,4 +14,4 @@ metadata:
   name: eu-sales-insights-sa
   namespace: analytics
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/eu-sales-insights-role
+    eks.amazonaws.com/role-arn: arn:aws:iam::698467950467:role/eu-sales-insights-role
