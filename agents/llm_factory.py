@@ -29,15 +29,33 @@ def _infer_provider(model: str) -> str:
 
 
 def _with_user_turn(messages):
-    """Gemini rejects a request that carries only a system instruction ("contents are required");
-    OpenAI accepts it. Nodes that run with an empty history (e.g. the Medic's first turn) would
-    otherwise crash, so append a minimal user turn in that case."""
-    from langchain_core.messages import HumanMessage, SystemMessage
+    """Make a message list satisfy Gemini's turn-order rules (OpenAI is more lenient):
 
-    msgs = list(messages)
-    if not any(not isinstance(m, SystemMessage) for m in msgs):
-        msgs.append(HumanMessage(content="Begin. Follow the instructions above."))
-    return msgs
+    * a request must contain at least one non-system turn ("contents are required");
+    * a model turn may not open the conversation, and a model FUNCTION-CALL turn must come
+      right after a user turn or a tool-response turn ("function call turn comes immediately
+      after a user turn or after a function response turn").
+
+    The agents re-send a trimmed window of earlier history, which can start with — or contain —
+    an earlier tool-call turn without the user turn before it. A minimal user turn is inserted
+    where needed; the model turns themselves (and their thought signatures) are left untouched.
+    """
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+
+    out, prev = [], None   # prev = last non-system message
+    for m in messages:
+        if isinstance(m, SystemMessage):
+            out.append(m)
+            continue
+        if isinstance(m, AIMessage) and (
+            prev is None or (m.tool_calls and not isinstance(prev, (HumanMessage, ToolMessage)))
+        ):
+            out.append(HumanMessage(content="Continue."))
+        out.append(m)
+        prev = m
+    if prev is None:
+        out.append(HumanMessage(content="Begin. Follow the instructions above."))
+    return out
 
 
 _GEMINI_CHAT_CLS = None

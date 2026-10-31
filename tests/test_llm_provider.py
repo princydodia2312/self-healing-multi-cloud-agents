@@ -111,6 +111,33 @@ class TestGeminiUserTurnGuard:
         msgs = [SystemMessage(content="rules"), HumanMessage(content="hi")]
         assert llm_factory._with_user_turn(msgs) == msgs
 
+    def test_leading_tool_call_gets_a_user_turn_before_it(self):
+        # The exact shape that crashed the Architect's schema phase on Gemini:
+        # [system, ai(tool_call), tool, user(task)].
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+        call = AIMessage(content="", tool_calls=[{"name": "q", "args": {}, "id": "c1"}])
+        msgs = [SystemMessage(content="rules"), call,
+                ToolMessage(content="spec", tool_call_id="c1"), HumanMessage(content="task")]
+        out = llm_factory._with_user_turn(msgs)
+        assert [type(m).__name__ for m in out] == [
+            "SystemMessage", "HumanMessage", "AIMessage", "ToolMessage", "HumanMessage"]
+        assert out[2] is call                           # model turn (and its signature) untouched
+
+    def test_tool_call_after_model_text_gets_a_user_turn(self):
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+        msgs = [SystemMessage(content="s"), HumanMessage(content="u"), AIMessage(content="thinking"),
+                AIMessage(content="", tool_calls=[{"name": "q", "args": {}, "id": "c2"}])]
+        out = llm_factory._with_user_turn(msgs)
+        assert isinstance(out[3], HumanMessage) and out[4] is msgs[3]
+
+    def test_valid_tool_chain_untouched(self):
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+        msgs = [SystemMessage(content="s"), HumanMessage(content="u"),
+                AIMessage(content="", tool_calls=[{"name": "q", "args": {}, "id": "c3"}]),
+                ToolMessage(content="r", tool_call_id="c3"),
+                AIMessage(content="", tool_calls=[{"name": "q", "args": {}, "id": "c4"}])]
+        assert llm_factory._with_user_turn(msgs) == msgs
+
 
 class TestDefaults:
     def test_gemini_defaults_and_nl_client(self, env):
