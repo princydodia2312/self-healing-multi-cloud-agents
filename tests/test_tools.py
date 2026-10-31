@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 
 import yaml
 
@@ -252,3 +253,20 @@ class TestSyncPartitionSchemaArgGuard:
     def test_validator_clean_on_correct_call(self, tmp_path):
         out = self._validate(tmp_path, "sync_partition_metadata('sales_eu', 'pipe_x', 'ADD')")
         assert "TRINO" not in out
+
+
+class TestExecuteTerraformPreflight:
+    """execute_terraform must refuse plan/apply while main.tf is still unwritten (the eu_sales run
+    hit 'Reference to undeclared resource' after the agent ran terraform with only outputs.tf)."""
+
+    def test_apply_refused_without_main_tf(self, tmp_path, monkeypatch):
+        from agents.tools import execute_terraform
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "terraform").mkdir()
+        (tmp_path / "terraform" / "providers.tf").write_text("provider \"aws\" {}\n")
+        (tmp_path / "terraform" / "outputs.tf").write_text("output \"x\" { value = aws_s3_bucket.b.arn }\n")
+        with patch("agents.tools.subprocess.run") as run:
+            out = execute_terraform.invoke({"command": "apply"})
+        assert "terraform/main.tf not written yet" in out
+        run.assert_not_called()

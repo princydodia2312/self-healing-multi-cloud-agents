@@ -199,6 +199,7 @@ def validate_generated_code(filename: str) -> str:
             "POSTGRES_DB_PASSWORD", "POSTGRES_DB_NAME",
             "MYSQL_DB_HOST", "MYSQL_DB_PORT", "MYSQL_DB_USER",
             "MYSQL_DB_PASSWORD", "MYSQL_DB_NAME",
+            "MONGO_URI", "MONGO_DB_NAME",
         })
         # env-var name → generic cloud_get() key (same for every provider/engine)
         _ENVVAR_TO_GENERIC_KEY = {
@@ -212,6 +213,8 @@ def validate_generated_code(filename: str) -> str:
             "MYSQL_DB_USER":        "db_user",
             "MYSQL_DB_PASSWORD":    "db_password",
             "MYSQL_DB_NAME":        "db_name",
+            "MONGO_URI":            "mongo_uri",
+            "MONGO_DB_NAME":        "mongo_db_name",
         }
 
         with open(filename, encoding="utf-8") as f:
@@ -289,7 +292,9 @@ def validate_generated_code(filename: str) -> str:
             if m.group(1).upper() in _CRED_ENVVARS
         ]
         # Detect the db_type from env var names found (POSTGRES_* → postgres, MYSQL_* → mysql)
-        detected_db_type = "mysql" if any(
+        detected_db_type = "mongodb" if any(
+            ev.startswith("MONGO_") for ev, _ in found_cred_violations
+        ) else "mysql" if any(
             ev.startswith("MYSQL_") for ev, _ in found_cred_violations
         ) else "postgres"
 
@@ -1885,11 +1890,62 @@ def _redact_secrets(s: str) -> str:
     return s
 
 
+def _read_mongo_schema(collection: str, cloud: str, sample_size: int = 200):
+    """read_data_schema for a MongoDB source: sample documents and INFER the schema (a collection
+    has none). Reports every field path with observed types / presence so the Architect can write
+    flattening code that survives nested objects, arrays, missing fields and mixed types."""
+    from utils.mongo_schema import flattened_columns, infer_document_schema, to_jsonable
+
+    uri = cloud_get(cloud, "mongo_uri", db_type="mongodb")
+    db_name = cloud_get(cloud, "mongo_db_name", db_type="mongodb") or "shop_raw"
+    if not uri:
+        return ("Error: MongoDB connection string not found (SSM mongo_uri, .bootstrap_outputs.json "
+                "or MONGO_URI env var).")
+    try:
+        from pymongo import MongoClient
+
+        client = MongoClient(uri, serverSelectionTimeoutMS=10000)
+        try:
+            docs = list(client[db_name][collection].find({}, limit=sample_size))
+        finally:
+            client.close()
+    except Exception as e:
+        msg = _redact_secrets(str(e).replace(uri, "<MONGO_URI>"))
+        return f"Database Error on mongodb: {msg} [{type(e).__name__}]"
+
+    if not docs:
+        return f"Collection '{collection}' not found or empty in MongoDB database '{db_name}'."
+
+    schema = infer_document_schema(docs)
+    columns = flattened_columns(schema)
+    try:
+        _LAST_SCHEMA_CACHE["table"] = collection
+        _LAST_SCHEMA_CACHE["columns"] = columns
+    except Exception:
+        pass
+
+    sample = [to_jsonable(d) for d in docs[:3]]
+    if os.getenv("PII_SENSITIVE", "false").lower() == "true":
+        sample = _mask_sample_rows(sample)
+
+    return {
+        "status": "success",
+        "database": "mongodb",
+        "collection": collection,
+        "documents_sampled": len(docs),
+        "schema": [f"{e['path']} ({'|'.join(e['types'])}, present {e['present_pct']}%)"
+                   + (f" — {e['note']}" if e["note"] else "") for e in schema],
+        "flattened_columns": columns,
+        "sample_documents": sample,
+    }
+
+
+
 @tool
 def read_data_schema(table_name: str, db_type: str = "postgres"):
     """
     Connects to the database and returns the table schema and a sample of rows.
-    Supports: postgres (AWS RDS), mysql, sqlite.
+    Supports: postgres (AWS RDS), mysql, sqlite, mongodb (collection → inferred document schema).
     """
 
     try:
@@ -1908,6 +1964,9 @@ def read_data_schema(table_name: str, db_type: str = "postgres"):
         # URL.create keeps the password OUT of the string form (repr shows ***), so a leaked/logged
         # URL or a driver error embedding the DSN cannot expose the credential.
         cloud = os.getenv("CLOUD_PROVIDER", "aws").lower()
+
+        if db_type in ("mongodb", "mongo"):
+            return _read_mongo_schema(table_name, cloud)
 
         if db_type == "postgres":
             db_url = URL.create(
@@ -2044,6 +2103,17 @@ def execute_terraform(command: str, vars_dict: dict = None):
 
     if not terraform_dir.exists():
         return "Error: terraform/ directory not found. Run write_terraform_config first."
+
+    # Never run Terraform on a half-written config: outputs.tf referencing resources that live in a
+    # not-yet-written main.tf fails with "Reference to undeclared resource" and burns a whole heal
+    # round. Tell the agent which files are still missing instead (it can write them in the same turn).
+    _sub = (command or "").strip().split(" ", 1)[0].lower()
+    if _sub in ("plan", "apply"):
+        _missing_tf = [f for f in ("providers.tf", "main.tf") if not (terraform_dir / f).exists()]
+        if _missing_tf:
+            return (f"Error: terraform/{', terraform/'.join(_missing_tf)} not written yet — call "
+                    f"write_terraform_config for {', '.join(_missing_tf)} BEFORE execute_terraform "
+                    f"'{_sub}'. No terraform command was run.")
 
     # 2. CI/CD OPTIMIZATION FLAGS
     # A professional knows that Agents/CI cannot press "yes"
