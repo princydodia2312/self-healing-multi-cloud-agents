@@ -52,8 +52,9 @@ class TestGetLlmGemini:
         fake = MagicMock()
         with patch.object(llm_factory, "_gemini_chat_cls", return_value=fake):
             llm = llm_factory.get_llm(temperature=0)
-        primary, fallback = (c.kwargs for c in fake.call_args_list)
-        assert primary["model"] == "gemini-3.8-flash" and fallback["model"] == "gemini-3.6-flash"
+        primary, *fallbacks = (c.kwargs for c in fake.call_args_list)
+        assert primary["model"] == "gemini-3.8-flash"
+        assert [f["model"] for f in fallbacks] == ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"]
         assert primary["google_api_key"] == "g-key"
         assert primary["max_retries"] == 2           # give up sooner on an overloaded primary...
         assert "temperature" not in primary          # Gemini 3+: keep Google's default sampling

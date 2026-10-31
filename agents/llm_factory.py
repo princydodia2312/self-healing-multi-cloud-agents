@@ -13,8 +13,9 @@ _PREFIX_TO_PROVIDER = {
 }
 
 # Used when the primary Gemini model is overloaded (503), times out (504) or hits its per-model
-# free-tier quota (429). A different model has separate capacity AND a separate quota.
-_DEFAULT_GEMINI_FALLBACK = "gemini-3.6-flash"
+# free-tier quota (429). Each model has separate capacity AND a separate quota — the free tier
+# allows ~20 requests/day PER MODEL, so a chain of models multiplies the free daily budget.
+_DEFAULT_GEMINI_FALLBACK = "gemini-3.6-flash,gemini-2.5-flash,gemini-3.5-flash-lite"
 
 
 def _infer_provider(model: str) -> str:
@@ -119,15 +120,16 @@ def get_llm(temperature=0):
         )
 
     if provider == "gemini":
-        fallback = (os.getenv("LLM_FALLBACK_MODEL") or _DEFAULT_GEMINI_FALLBACK).strip()
-        use_fallback = fallback.lower() not in ("", "none", "off") and fallback != model
-        # With a fallback model available, give up on an overloaded primary sooner and switch.
-        retries = int(os.getenv("LLM_MAX_RETRIES") or ("2" if use_fallback else "6"))
+        raw = (os.getenv("LLM_FALLBACK_MODEL") or _DEFAULT_GEMINI_FALLBACK).strip()
+        fallbacks = [] if raw.lower() in ("", "none", "off") else [
+            m.strip() for m in raw.split(",") if m.strip() and m.strip() != model]
+        # With fallback models available, give up on an overloaded/exhausted model sooner and switch.
+        retries = int(os.getenv("LLM_MAX_RETRIES") or ("2" if fallbacks else "6"))
         primary = _gemini_model(model, temperature, timeout, retries)
-        if not use_fallback:
+        if not fallbacks:
             return primary
-        # RunnableWithFallbacks forwards bind_tools(...) to the primary AND the fallback.
-        return primary.with_fallbacks([_gemini_model(fallback, temperature, timeout, retries)])
+        # RunnableWithFallbacks forwards bind_tools(...) to the primary AND every fallback.
+        return primary.with_fallbacks([_gemini_model(m, temperature, timeout, retries) for m in fallbacks])
 
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
