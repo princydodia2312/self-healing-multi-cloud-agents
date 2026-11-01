@@ -252,6 +252,30 @@ ORDER BY run_date DESC;
 4. The run ends with `✅ MISSION VERIFIED`. The S3 bucket now contains `run_date=…/` Parquet files, Trino can query them, and the Grafana dashboard shows rows processed vs rejected.
 5. To show the Medic's routing without any cloud, run `make heal LOG=<some_failing_log>.txt`.
 
+## 7b. Results of the real AWS runs (1 November 2026)
+
+Both pipelines were run end to end on AWS by the agents (Gemini free tier) and ended with `✅ MISSION VERIFIED`:
+
+| | `eu_sales` (PostgreSQL, structured) | `shop_orders` (MongoDB, semi-structured) |
+|---|---|---|
+| Source data | 100 dirty rows in `raw_eu_sales` | 500 messy documents → 977 flattened item rows |
+| Rows written to S3 as Parquet (`run_date=2026-11-01`) | 68 | 644 |
+| Rows rejected by the business rules | 32 (`monetary_integrity` 21, `temporal_validity` 11) | 333 (`completeness_enforcement` 98, `monetary_integrity` 99, `quantity_validity` 64, `temporal_validity` 72) |
+| Rows kept but flagged (`is_suspicious`) | 12 | 19 |
+| Deploy workflow (GitHub Actions) | ✅ success | ✅ success |
+| Queryable in Trino | ✅ `hive.sales_eu.pipe_eu_sales_to_s3` | ✅ `hive.shop_orders.pipe_shop_orders_to_s3` |
+| Grafana dashboard | EU Sales Data Observability | Shop Orders Data Observability |
+
+Problems found during the real runs, and how they were fixed in the system (not by editing generated files):
+
+| Problem | Fix |
+|---|---|
+| Trino DDL declared `DECIMAL`/`INTEGER` while pandas wrote `double`/`int64` → "Failed to read Parquet file" | SQL standard updated; DDL types are normalised to `DOUBLE`/`BIGINT` at write time; validator check |
+| Terraform executed before `main.tf` was written | `execute_terraform` refuses `plan`/`apply` until `providers.tf` and `main.tf` exist |
+| Gemini rejected message histories that start with a tool call | A user turn is inserted where Gemini's turn-order rules require one |
+| Free tier: ~20 requests/day per model | Agents fall back through four Gemini models |
+| Shared Trino could not read the suffixed `eu_sales` bucket after the second deploy | Shared IRSA policy extended to `*-insights-data-*` |
+
 ## 8. Testing and evaluation
 
 ```bash
@@ -275,7 +299,7 @@ The eval harness replays 12 failure cases (script bugs including two MongoDB one
 
 - **Batch only:** no streaming ingestion (Kafka/Kinesis would be the next step).
 - **Single-node processing:** the ETL uses pandas, so very large volumes would need Spark (EMR) or pushing transforms into Trino.
-- **Demo-grade networking:** the RDS endpoint is public but restricted to allow-listed IP ranges (CIDR), and Grafana is on a password-protected public load balancer. Trino is internal-only and has no authentication.
+- **Demo-grade networking:** the RDS endpoint is public but restricted to allow-listed IP ranges (CIDR), and Grafana is on a password-protected public load balancer (port 3000). Trino is internal-only and has no authentication.
 - **The LLM is not unit-tested:** generated-code quality is checked by the validators, the eval harness and real runs, not by asserting on model output.
 
 ## Credits and license
