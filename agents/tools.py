@@ -701,7 +701,7 @@ def validate_generated_code(filename: str) -> str:
             # crashes at runtime with "Unknown type 'X'". write_project_file normalises them;
             # this is the safety net. (Reuses the normaliser: if it would change anything, the
             # DDL carries an invalid type.) Skipped for Databricks Delta (STRING is valid there).
-            if not _is_databricks_run() and _fix_trino_ddl_types(_raw_sql) != _raw_sql:
+            if not _is_databricks_run() and _fix_trino_ddl_types(_raw_sql, parquet_match=False) != _raw_sql:
                 errors.append(
                     "SQL: a source-only column type (TEXT / STRING / DOUBLE PRECISION / "
                     "CHARACTER VARYING) is not a valid Trino type — CREATE TABLE fails at runtime "
@@ -1525,6 +1525,8 @@ _TRINO_TYPE_FIXES = (
     (re.compile(r"\bCHARACTER\s+VARYING\b", re.IGNORECASE), "VARCHAR"),
     (re.compile(r"(\b[A-Za-z_]\w*\s+)TEXT\b", re.IGNORECASE), r"\1VARCHAR"),
     (re.compile(r"(\b[A-Za-z_]\w*\s+)STRING\b", re.IGNORECASE), r"\1VARCHAR"),
+)
+_PARQUET_TYPE_FIXES = (
     # Parquet type match: pandas writes float64 → double and Int64/int64 → int64; a DECIMAL/INTEGER
     # column makes every Trino read fail with "Failed to read Parquet file" (first real run).
     (re.compile(r"\b(?:DECIMAL|NUMERIC)\s*\(\s*\d+\s*(?:,\s*\d+\s*)?\)", re.IGNORECASE), "DOUBLE"),
@@ -1533,8 +1535,11 @@ _TRINO_TYPE_FIXES = (
 )
 
 
-def _fix_trino_ddl_types(content: str) -> str:
-    for rx, rep in _TRINO_TYPE_FIXES:
+def _fix_trino_ddl_types(content: str, parquet_match: bool = True) -> str:
+    """Normalise source-only types (TEXT/STRING/...) and — unless parquet_match=False — the
+    DECIMAL/INTEGER types that do not match the Parquet files pandas writes."""
+    fixes = _TRINO_TYPE_FIXES + (_PARQUET_TYPE_FIXES if parquet_match else ())
+    for rx, rep in fixes:
         content = rx.sub(rep, content)
     return content
 
