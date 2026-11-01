@@ -321,6 +321,10 @@ resource "aws_iam_role_policy" "irsa_pipelines" {
         Resource = [
           "arn:aws:s3:::*-insights-data",
           "arn:aws:s3:::*-insights-data/*",
+          # Buckets with a uniqueness suffix (e.g. eu-sales-insights-data-princy2312). Needed because
+          # the SHARED Trino runs as whichever pipeline deployed last and must read every pipeline's data.
+          "arn:aws:s3:::*-insights-data-*",
+          "arn:aws:s3:::*-insights-data-*/*",
         ]
       },
       {
