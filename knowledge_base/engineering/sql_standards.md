@@ -47,16 +47,27 @@ When generating `setup_trino.sql`, ensure the following:
     - `is_suspicious BOOLEAN`: add this column **only if** at least one `FLAG_AS_SUSPICIOUS` rule is defined in `TRANSFORMATION_LOGIC`. If no such rule exists, omit the column entirely from the DDL — adding it without a corresponding pipeline implementation creates a schema/data mismatch. Do not add it as a default or placeholder.
     - Map the discovered type to a **valid Trino type** as below. The discovered type guides the choice (e.g. an integer width), but you MUST emit a Trino type — **never copy a source-only type verbatim.** `read_data_schema` reports the SOURCE (Postgres/MySQL) type, and several source types are **NOT valid Trino types** — emitting them crashes `CREATE TABLE` at runtime with `Unknown type 'X'`:
         - `TEXT`, `STRING`, `CHARACTER VARYING`, `VARCHAR(n)` (string / text) → **`VARCHAR`** ❌ `order_id TEXT` ✅ `order_id VARCHAR`
-        - `DOUBLE PRECISION`, `REAL`, `FLOAT` (floating-point) → **`DOUBLE`** ❌ `amount DOUBLE PRECISION` ✅ `amount DOUBLE` (and if it is a **monetary** value, prefer `DECIMAL(18,2)`)
-        - Integer / count / quantity / **identifier** (e.g. `cust_id`, `customer_id`) → keep the discovered integer width: `INTEGER` stays `INTEGER`, `BIGINT` stays `BIGINT`. **NEVER downgrade an integer/BIGINT column to `VARCHAR`** just because it is an ID.
-        - Floating-point **financial amount** → `DECIMAL(18,2)`
+        - `DOUBLE PRECISION`, `REAL`, `FLOAT` (floating-point) → **`DOUBLE`** ❌ `amount DOUBLE PRECISION` ✅ `amount DOUBLE` — monetary values too (see **Parquet type match** below)
+        - Integer / count / quantity / **identifier** (e.g. `cust_id`, `customer_id`) → **`BIGINT`** (whatever the source width: pandas writes integers — including the nullable `Int64` cast — as Parquet `int64`). **NEVER downgrade an integer column to `VARCHAR`** just because it is an ID.
+        - Floating-point / **financial amount** (price, amount, spend) → **`DOUBLE`**
         - Date-time (`TIMESTAMP WITHOUT TIME ZONE`, `DATE`+time) → `TIMESTAMP`
         - Boolean → `BOOLEAN`
       **Rule of thumb:** the only column types that may appear in `setup_trino.sql` are `VARCHAR`, `INTEGER`, `BIGINT`, `DOUBLE`, `DECIMAL(p,s)`, `TIMESTAMP`, `DATE`, `BOOLEAN`. Anything else is a source type that was not mapped.
-    - Do not apply `DECIMAL(18,2)` to quantity or count columns — reserve it for monetary values only. Example:
+    - **Parquet type match (CRITICAL):** the external table only DESCRIBES files the pandas script already wrote —
+      Trino does NOT convert types when reading. Each column type MUST equal the Parquet type pandas produces, or every
+      query fails with `HIVE_CURSOR_ERROR: Failed to read Parquet file` (the pipeline itself still reports success):
+        | pandas dtype in the script | Parquet type | Trino DDL type |
+        |---|---|---|
+        | `float64` (after `pd.to_numeric`) | double | `DOUBLE` |
+        | `Int64` / `int64` | int64 | `BIGINT` |
+        | `datetime64` (after `pd.to_datetime`) | timestamp | `TIMESTAMP` |
+        | `object` / `string` | string | `VARCHAR` |
+        | `bool` (`is_suspicious`) | boolean | `BOOLEAN` |
         ```sql
-        unit_price DECIMAL(18,2),  -- ✅ monetary
-        -- quantity DECIMAL(18,2)  ← ❌ WRONG — DECIMAL is for monetary only
+        unit_price DOUBLE,          -- ✅ pandas float64
+        quantity   BIGINT,          -- ✅ pandas Int64
+        -- unit_price DECIMAL(18,2) ← ❌ Parquet holds double → "Failed to read Parquet file"
+        -- quantity   INTEGER       ← ❌ Parquet holds int64  → "Failed to read Parquet file"
         ```
 - **Partitioning**: Always partition by `run_date`. Add `run_date DATE` as the **last column** in the column list and include `partitioned_by = ARRAY['run_date']` in the `WITH` clause. `run_date` is a Hive-style partition key — Trino derives its value from the storage path (`run_date=YYYY-MM-DD/`) and does NOT expect it inside the Parquet files.
 
@@ -74,8 +85,8 @@ When generating `setup_trino.sql`, ensure the following:
     -- AWS
     CREATE TABLE hive.sales_eu.pipe_sales_eu_to_s3 (
         order_id    VARCHAR,
-        unit_price  DECIMAL(18,2),
-        quantity    INTEGER,
+        unit_price  DOUBLE,
+        quantity    BIGINT,
         run_date    DATE
     ) WITH (
         format            = 'PARQUET',
@@ -85,7 +96,7 @@ When generating `setup_trino.sql`, ensure the following:
 
     -- Azure
     CREATE TABLE hive.crm_us.pipe_crm_us_to_azure (
-        cust_id     INTEGER,
+        cust_id     BIGINT,
         full_name   VARCHAR,
         run_date    DATE
     ) WITH (
@@ -97,7 +108,7 @@ When generating `setup_trino.sql`, ensure the following:
     -- GCP
     CREATE TABLE hive.marketing_global.pipe_mkt_global_to_gcp (
         campaign_id VARCHAR,
-        ad_spend    DECIMAL(18,2),
+        ad_spend    DOUBLE,
         run_date    DATE
     ) WITH (
         format            = 'PARQUET',

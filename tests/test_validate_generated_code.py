@@ -462,3 +462,26 @@ class TestGcpJobImageNoGhaExpr:
         out = _validate(tmp_path, "job.yaml",
                         self._job("europe-west3-docker.pkg.dev/p/r/img:latest"))
         assert "InvalidImageName" not in out
+
+
+class TestTrinoParquetTypeMatch:
+    """First real run: the DDL declared unit_price DECIMAL(18,2) / quantity INTEGER while pandas wrote
+    double / int64 → every Trino query failed with 'Failed to read Parquet file'."""
+
+    _DDL = ("CREATE SCHEMA IF NOT EXISTS hive.sales_eu;\n"
+            "CREATE TABLE hive.sales_eu.pipe_x (\n  order_id VARCHAR,\n  unit_price {price},\n"
+            "  quantity {qty},\n  run_date DATE\n) WITH (format='PARQUET', "
+            "external_location='s3://b/processed/', partitioned_by=ARRAY['run_date']);\n")
+
+    def _validate(self, tmp_path, ddl):
+        sql_f = tmp_path / "setup_trino.sql"
+        sql_f.write_text(ddl, encoding="utf-8")
+        return str(validate_generated_code.invoke({"filename": str(sql_f)}))
+
+    def test_decimal_and_integer_flagged(self, tmp_path):
+        out = self._validate(tmp_path, self._DDL.format(price="DECIMAL(18,2)", qty="INTEGER"))
+        assert "Failed to read Parquet file" in out and "DECIMAL" in out and "INTEGER" in out
+
+    def test_double_and_bigint_clean_of_type_error(self, tmp_path):
+        out = self._validate(tmp_path, self._DDL.format(price="DOUBLE", qty="BIGINT"))
+        assert "do not match the Parquet files" not in out

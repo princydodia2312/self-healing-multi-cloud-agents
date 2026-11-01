@@ -628,6 +628,18 @@ def validate_generated_code(filename: str) -> str:
                 errors.append("SQL: 'CREATE EXTERNAL TABLE' is Hive/HQL syntax — use plain 'CREATE TABLE' in Trino.")
             if "S3A://" in content:
                 errors.append("SQL: s3a:// is Hadoop/Spark only — Trino uses s3:// (AWS), gs:// (GCP), abfss:// (Azure).")
+            # Parquet type match: pandas writes float64 → double and Int64/int64 → int64. An external
+            # table declaring DECIMAL / INTEGER for those columns is created fine but EVERY query then
+            # fails with HIVE_CURSOR_ERROR "Failed to read Parquet file" (seen on the first real run).
+            _bad_types = sorted({m.group(1) for m in re.finditer(
+                r"\b(DECIMAL|NUMERIC|INTEGER|SMALLINT|TINYINT|INT|REAL)\b", content)})
+            if _bad_types:
+                errors.append(
+                    f"SQL: column type(s) {', '.join(_bad_types)} do not match the Parquet files pandas writes "
+                    "(float64 → DOUBLE, Int64/int64 → BIGINT). Use DOUBLE for prices/amounts and BIGINT for "
+                    "quantities/counts/integer IDs, or every query fails with \"Failed to read Parquet file\". "
+                    "See sql_standards.md 'Parquet type match'."
+                )
             cloud = os.getenv("CLOUD_PROVIDER", "").lower()
             if cloud == "aws" and ("GS://" in content or "ABFSS://" in content):
                 errors.append("SQL: GCS/Azure protocol in an AWS pipeline — use s3://.")
