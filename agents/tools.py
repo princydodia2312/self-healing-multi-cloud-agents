@@ -1525,6 +1525,11 @@ _TRINO_TYPE_FIXES = (
     (re.compile(r"\bCHARACTER\s+VARYING\b", re.IGNORECASE), "VARCHAR"),
     (re.compile(r"(\b[A-Za-z_]\w*\s+)TEXT\b", re.IGNORECASE), r"\1VARCHAR"),
     (re.compile(r"(\b[A-Za-z_]\w*\s+)STRING\b", re.IGNORECASE), r"\1VARCHAR"),
+    # Parquet type match: pandas writes float64 → double and Int64/int64 → int64; a DECIMAL/INTEGER
+    # column makes every Trino read fail with "Failed to read Parquet file" (first real run).
+    (re.compile(r"\b(?:DECIMAL|NUMERIC)\s*\(\s*\d+\s*(?:,\s*\d+\s*)?\)", re.IGNORECASE), "DOUBLE"),
+    (re.compile(r"\b(?:DECIMAL|NUMERIC|REAL)\b", re.IGNORECASE), "DOUBLE"),
+    (re.compile(r"(\b[A-Za-z_]\w*\s+)(?:INTEGER|INT|SMALLINT|TINYINT)\b", re.IGNORECASE), r"\1BIGINT"),
 )
 
 

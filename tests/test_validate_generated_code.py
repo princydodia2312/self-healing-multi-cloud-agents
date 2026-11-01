@@ -485,3 +485,10 @@ class TestTrinoParquetTypeMatch:
     def test_double_and_bigint_clean_of_type_error(self, tmp_path):
         out = self._validate(tmp_path, self._DDL.format(price="DOUBLE", qty="BIGINT"))
         assert "do not match the Parquet files" not in out
+
+    def test_write_normalises_decimal_and_integer(self):
+        from agents.tools import _fix_trino_ddl_types
+        out = _fix_trino_ddl_types(self._DDL.format(price="DECIMAL(18,2)", qty="INTEGER"))
+        assert "unit_price DOUBLE" in out and "quantity BIGINT" in out
+        assert "DECIMAL" not in out and "INTEGER" not in out
+        assert "BIGINT" == _fix_trino_ddl_types("BIGINT")          # never touches BIGINT itself
