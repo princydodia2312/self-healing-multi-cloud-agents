@@ -63,3 +63,6 @@ id_ed25519.*
 
 # LinkedIn debut/marketing drafts — not part of the public codebase (mirrors promo/)
 /LinkedIn/
+
+# run_project.sh run logs
+logs/
