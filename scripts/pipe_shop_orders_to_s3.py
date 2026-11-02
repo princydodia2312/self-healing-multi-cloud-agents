@@ -21,17 +21,6 @@ elif _CLOUD == "azure":
 
 logging.basicConfig(level=logging.INFO)
 
-EXPECTED = [
-    "order_id",
-    "order_date",
-    "customer_name",
-    "customer_email",
-    "customer_city",
-    "product",
-    "price",
-    "qty",
-]
-
 
 def run():
     logging.info("Pipeline starting: pipe_shop_orders_to_s3")
@@ -54,7 +43,7 @@ def run():
         client = storage.Client()
         blobs = list(client.list_blobs(bucket, prefix=prefix, max_results=1))
         if blobs:
-            logging.info("Destination already populated. Skipping.")
+            logging.info(f"Partition run_date={run_date} already populated. Skipping.")
             return
     elif _CLOUD == "azure":
         container_name = bucket.split('@')[0]
@@ -62,24 +51,36 @@ def run():
         container = client.get_container_client(container_name)
         blobs = list(container.list_blobs(name_starts_with=prefix))
         if blobs:
-            logging.info("Destination already populated. Skipping.")
+            logging.info(f"Partition run_date={run_date} already populated. Skipping.")
             return
 
     # ── 2. CREDENTIALS via cloud_get() ───────────────────────────────────────
     if _CLOUD == "aws":
         mongo_uri = cloud_get("aws", "mongo_uri", db_type="mongodb")
-        mongo_db = cloud_get("aws", "mongo_db_name", db_type="mongodb") or "shop_raw"
+        mongo_db  = cloud_get("aws", "mongo_db_name", db_type="mongodb") or "shop_raw"
     elif _CLOUD == "gcp":
         mongo_uri = cloud_get("gcp", "mongo_uri", db_type="mongodb")
-        mongo_db = cloud_get("gcp", "mongo_db_name", db_type="mongodb") or "shop_raw"
+        mongo_db  = cloud_get("gcp", "mongo_db_name", db_type="mongodb") or "shop_raw"
     elif _CLOUD == "azure":
         mongo_uri = cloud_get("azure", "mongo_uri", db_type="mongodb")
-        mongo_db = cloud_get("azure", "mongo_db_name", db_type="mongodb") or "shop_raw"
+        mongo_db  = cloud_get("azure", "mongo_db_name", db_type="mongodb") or "shop_raw"
 
-    # ── 3. EXTRACTION + FLATTEN + TRANSFORMATION + WRITE ───────────────────────
+    # ── 3. EXTRACTION + FLATTEN + TRANSFORMATION + WRITE ──────────────────────
     start_time = time.time()
     total_rows = 0
     rejected_by_reason = {}
+
+    EXPECTED = [
+        "_id",
+        "customer_city",
+        "customer_email",
+        "customer_name",
+        "order_date",
+        "order_id",
+        "price",
+        "product",
+        "qty"
+    ]
 
     def _flatten(docs):
         docs = [d for d in docs if isinstance(d.get("items"), list) and d["items"]]
@@ -88,9 +89,16 @@ def run():
         chunk = pd.json_normalize(
             docs,
             record_path="items",
-            meta=["order_id", "order_date", ["customer", "name"], ["customer", "email"], ["customer", "city"]],
+            meta=[
+                "_id",
+                "order_id",
+                "order_date",
+                ["customer", "name"],
+                ["customer", "email"],
+                ["customer", "city"]
+            ],
             errors="ignore",
-            sep="_",
+            sep="_"
         )
         for col in EXPECTED:
             if col not in chunk.columns:
@@ -98,68 +106,74 @@ def run():
         return chunk[EXPECTED]
 
     def _process(chunk, i):
-        nonlocal total_rows, rejected_by_reason
+        nonlocal total_rows
+
         if chunk.empty:
             return i
+
+        if "_id" in chunk.columns:
+            chunk["_id"] = chunk["_id"].astype(str)
 
         # 3b. Business rules
-        # Rule 1: completeness_enforcement (DROP_RECORD)
+        # Rule 1: completeness_enforcement (DROP_RECORD) — order_id and product not NULL/empty
         _before = len(chunk)
-        _cond_id = chunk['order_id'].notna() & (chunk['order_id'].astype(str).str.strip() != '')
-        _cond_prod = chunk['product'].notna() & (chunk['product'].astype(str).str.strip() != '')
-        chunk = chunk[_cond_id & _cond_prod]
-        rejected_by_reason['completeness_enforcement'] = (
-            rejected_by_reason.get('completeness_enforcement', 0) + (_before - len(chunk))
+        cond_order_id = chunk["order_id"].notna() & (chunk["order_id"].astype(str).str.strip() != "")
+        cond_product  = chunk["product"].notna() & (chunk["product"].astype(str).str.strip() != "")
+        chunk = chunk[cond_order_id & cond_product]
+        rejected_by_reason["completeness_enforcement"] = (
+            rejected_by_reason.get("completeness_enforcement", 0) + (_before - len(chunk))
         )
 
-        # Rule 2: monetary_integrity (DROP_RECORD)
-        chunk['price'] = pd.to_numeric(chunk['price'], errors='coerce')
+        # Rule 2: monetary_integrity (DROP_RECORD) — price > 0.0
+        chunk["price"] = pd.to_numeric(chunk["price"], errors="coerce")
         _before = len(chunk)
-        chunk = chunk[chunk['price'] > 0.0]
-        rejected_by_reason['monetary_integrity'] = (
-            rejected_by_reason.get('monetary_integrity', 0) + (_before - len(chunk))
+        chunk = chunk[chunk["price"] > 0.0]
+        rejected_by_reason["monetary_integrity"] = (
+            rejected_by_reason.get("monetary_integrity", 0) + (_before - len(chunk))
         )
 
-        # Rule 3: quantity_validity (EXCLUDE_AND_LOG)
-        chunk['qty'] = pd.to_numeric(chunk['qty'], errors='coerce')
+        # Rule 3: quantity_validity (EXCLUDE_AND_LOG) — qty > 0
+        chunk["qty"] = pd.to_numeric(chunk["qty"], errors="coerce")
         _before = len(chunk)
-        _mask_qty = chunk['qty'] > 0
-        if (~_mask_qty).any():
-            logging.warning(f"Excluded {(~_mask_qty).sum()} rows: invalid or non-positive quantity.")
-        chunk = chunk[_mask_qty]
-        rejected_by_reason['quantity_validity'] = (
-            rejected_by_reason.get('quantity_validity', 0) + (_before - len(chunk))
+        _valid_qty = chunk["qty"] > 0
+        if (~_valid_qty).any():
+            logging.warning(f"Excluded {(~_valid_qty).sum()} rows with invalid quantity (quantity_validity).")
+        chunk = chunk[_valid_qty]
+        rejected_by_reason["quantity_validity"] = (
+            rejected_by_reason.get("quantity_validity", 0) + (_before - len(chunk))
         )
 
-        # Rule 4: temporal_validity (EXCLUDE_AND_LOG)
-        chunk['order_date'] = pd.to_datetime(chunk['order_date'], errors='coerce')
+        # Rule 4: temporal_validity (EXCLUDE_AND_LOG) — order_date valid and <= current timestamp
+        chunk["order_date"] = pd.to_datetime(chunk["order_date"], errors="coerce")
         _before = len(chunk)
-        _now = pd.Timestamp.now()
-        _mask_date = chunk['order_date'].notna() & (chunk['order_date'] <= _now)
-        if (~_mask_date).any():
-            logging.warning(f"Excluded {(~_mask_date).sum()} rows: invalid or future order date.")
-        chunk = chunk[_mask_date]
-        rejected_by_reason['temporal_validity'] = (
-            rejected_by_reason.get('temporal_validity', 0) + (_before - len(chunk))
+        _valid_date = chunk["order_date"].notna() & (chunk["order_date"] <= pd.Timestamp.now())
+        if (~_valid_date).any():
+            logging.warning(f"Excluded {(~_valid_date).sum()} rows with invalid/future date (temporal_validity).")
+        chunk = chunk[_valid_date]
+        rejected_by_reason["temporal_validity"] = (
+            rejected_by_reason.get("temporal_validity", 0) + (_before - len(chunk))
         )
 
-        # Rule 5: location_default (DEFAULT_VALUE 'UNKNOWN')
-        _city_valid = chunk['customer_city'].notna() & (chunk['customer_city'].astype(str).str.strip() != '')
-        chunk['customer_city'] = chunk['customer_city'].where(_city_valid, other='UNKNOWN')
+        # Rule 5: location_default (DEFAULT_VALUE) — customer_city defaults to 'UNKNOWN'
+        _city_valid = chunk["customer_city"].notna() & (chunk["customer_city"].astype(str).str.strip() != "")
+        chunk["customer_city"] = chunk["customer_city"].where(_city_valid, other="UNKNOWN")
 
-        # Rule 6: bulk_order_outlier (FLAG_AS_SUSPICIOUS)
-        chunk['is_suspicious'] = chunk['qty'] >= 100
+        # Rule 6: bulk_order_outlier (FLAG_AS_SUSPICIOUS) — qty >= 100 is suspicious
+        chunk["is_suspicious"] = chunk["qty"] >= 100
 
-        if chunk.empty:
-            return i
+        for col in ["order_id", "customer_name", "customer_email", "customer_city", "product"]:
+            if col in chunk.columns:
+                chunk[col] = chunk[col].astype(str)
 
-        # 3c. Type casting — float64 → Int64 for quantity/count columns
-        int_cols = [c for c in chunk.select_dtypes(include='float64').columns
-                    if any(kw in c.lower() for kw in ['quantity', 'qty', 'count', 'units'])]
+        # 3c. Type casting — cast float64 -> Int64 for quantity/count columns
+        int_cols = [
+            c for c in chunk.select_dtypes(include="float64").columns
+            if any(kw in c.lower() for kw in ["quantity", "qty", "count", "units"])
+        ]
         for col in int_cols:
-            chunk[col] = chunk[col].astype('Int64')
+            chunk[col] = chunk[col].astype("Int64")
 
-        # 3d. Write
+        # 3d. Write parquet chunk
         chunk.to_parquet(
             f"{partition_uri}part_{i}.parquet",
             engine="pyarrow",
@@ -199,7 +213,6 @@ def run():
     trino_host = os.getenv("TRINO_HOST", "trino.analytics.svc.cluster.local")
     conn = trino_connect(host=trino_host, port=8080, user="pipeline")
     cursor = conn.cursor()
-
     for _attempt in range(5):
         try:
             cursor.execute("CALL hive.system.sync_partition_metadata('shop_orders', 'pipe_shop_orders_to_s3', 'ADD')")
@@ -215,7 +228,7 @@ def run():
 
     # ── 5. METRICS EMISSION ───────────────────────────────────────────────────
     pushgateway_url = os.getenv("PUSHGATEWAY_URL", "http://pushgateway.monitoring.svc.cluster.local:9091")
-    project_id = os.getenv("PROJECT_ID", "unknown")
+    project_id     = os.getenv("PROJECT_ID", "unknown")
     cloud_provider = os.getenv("CLOUD_PROVIDER", "unknown")
 
     registry = CollectorRegistry()

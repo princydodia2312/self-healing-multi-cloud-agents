@@ -5,4 +5,4 @@ trino
 prometheus-client
 boto3
 s3fs
-psycopg2-binary
+pymongo

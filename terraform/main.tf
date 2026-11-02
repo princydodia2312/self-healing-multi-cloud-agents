@@ -8,6 +8,7 @@ resource "aws_s3_bucket" "data_bucket" {
 
 resource "aws_s3_bucket_ownership_controls" "ownership_controls" {
   bucket = aws_s3_bucket.data_bucket.id
+
   rule {
     object_ownership = "BucketOwnerEnforced"
   }
@@ -23,6 +24,7 @@ resource "aws_s3_bucket_public_access_block" "public_access_block" {
 
 resource "aws_s3_bucket_versioning" "versioning" {
   bucket = aws_s3_bucket.data_bucket.id
+
   versioning_configuration {
     status = "Enabled"
   }
@@ -67,7 +69,8 @@ resource "aws_s3_object" "processed_dir" {
 resource "aws_iam_policy" "s3_access_policy" {
   name        = "${var.project_id}-s3-access-policy"
   description = "Scoped S3 and Glue access policy for ${var.project_id}"
-  policy      = jsonencode({
+
+  policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
@@ -83,12 +86,21 @@ resource "aws_iam_policy" "s3_access_policy" {
       {
         Effect = "Allow"
         Action = [
-          "glue:GetDatabase", "glue:GetDatabases", "glue:CreateDatabase",
-          "glue:GetTable",    "glue:GetTables",    "glue:CreateTable",
-          "glue:DeleteTable", "glue:UpdateTable",
-          "glue:GetPartition",     "glue:GetPartitions",
-          "glue:CreatePartition",  "glue:DeletePartition",  "glue:UpdatePartition",
-          "glue:BatchCreatePartition", "glue:BatchDeletePartition"
+          "glue:GetDatabase",
+          "glue:GetDatabases",
+          "glue:CreateDatabase",
+          "glue:GetTable",
+          "glue:GetTables",
+          "glue:CreateTable",
+          "glue:DeleteTable",
+          "glue:UpdateTable",
+          "glue:GetPartition",
+          "glue:GetPartitions",
+          "glue:CreatePartition",
+          "glue:DeletePartition",
+          "glue:UpdatePartition",
+          "glue:BatchCreatePartition",
+          "glue:BatchDeletePartition"
         ]
         Resource = [
           "arn:aws:glue:*:*:catalog",
