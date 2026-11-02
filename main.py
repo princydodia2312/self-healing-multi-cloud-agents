@@ -89,6 +89,28 @@ def _consume_stream(stream) -> str:
     return mission_status
 
 
+def _resume_input(run_config: dict, initial_state: dict):
+    """RESUME_RUN=1: continue the checkpointed run of this pipeline instead of starting over.
+
+    Returns None (LangGraph's "continue from the last checkpoint" input) when the checkpoint holds
+    an unfinished run, and restores that run's PROJECT_ID so pushes/CI lookups target the same
+    workflow. Falls back to a fresh start (initial_state) when there is nothing to resume.
+    """
+    try:
+        snap = app.get_state(run_config)
+    except Exception as e:
+        logger.warning(f"Could not read the checkpoint ({e}) — starting a fresh run.")
+        return initial_state
+    if not snap or not snap.values or not snap.next:
+        logger.info("No unfinished run in the checkpoint — starting a fresh run.")
+        return initial_state
+    pid = snap.values.get("project_id")
+    if pid:
+        os.environ["PROJECT_ID"] = pid
+    logger.info(f"♻️  RESUMING run {pid or '?'} at node(s) {list(snap.next)} — completed steps are not redone.")
+    return None
+
+
 def _is_natural_language(arg: str) -> bool:
     """
     Heuristic: if the argument is longer than 4 words it is a natural language
@@ -149,7 +171,10 @@ def _launch(pipe_conf, db_conf, rules_conf, infra_conf, pipeline_id, task):
             "configurable": {"thread_id": thread_id},
         }
         logger.info("Handing over to LangGraph Supervisor...")
-        _consume_stream(app.stream(initial_state, config=run_config))
+        stream_input = initial_state
+        if os.getenv("RESUME_RUN") == "1" and os.getenv("LANGGRAPH_CHECKPOINT_DB"):
+            stream_input = _resume_input(run_config, initial_state)
+        _consume_stream(app.stream(stream_input, config=run_config))
     except MissionFailedError as e:
         # The graph ENDED, but without a verified deployment — this is a mission
         # failure, not an engine crash. Exit 1 so the GitHub Action goes red; the

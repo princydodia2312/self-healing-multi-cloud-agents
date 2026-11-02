@@ -7,6 +7,7 @@
 #   ./run_project.sh full       start AWS + seed data + run BOTH pipelines + show results
 #   ./run_project.sh eu_sales   run only the PostgreSQL pipeline   (add --fresh to rewrite today's data)
 #   ./run_project.sh shop_orders run only the MongoDB pipeline     (add --fresh to rewrite today's data)
+#                               add --resume to continue a run that stopped (e.g. Gemini quota) where it left off
 #   ./run_project.sh results    show S3 files, Trino query results, Grafana URL
 #   ./run_project.sh ui         Streamlit UI with a LIVE Trino connection (Ctrl+C to stop)
 #   ./run_project.sh check      offline checks: tests + self-heal eval + security gate (free)
@@ -86,11 +87,24 @@ start_aws() {
 }
 
 # ── Pipelines ────────────────────────────────────────────────────────────────
-run_pipeline() {   # $1 = eu_sales | shop_orders, $2 = --fresh (optional)
+run_pipeline() {   # $1 = eu_sales | shop_orders, $2 = --fresh | --resume (optional)
   local p="$1" fresh="${2:-}" bucket
+  # Every run is checkpointed, so a run that stops (quota, network) can continue with --resume.
+  export LANGGRAPH_CHECKPOINT_DB="$LOG_DIR/checkpoint_${p}.sqlite"
+  mkdir -p "$LOG_DIR"
+  if [ "$fresh" = "--resume" ]; then
+    [ -f "$LANGGRAPH_CHECKPOINT_DB" ] || die "No saved run for $p to resume — start it without --resume."
+    export RESUME_RUN=1
+    green "↻ Resuming the stopped $p run (finished steps are not repeated)"
+  else
+    export RESUME_RUN=0
+    rm -f "$LANGGRAPH_CHECKPOINT_DB"
+  fi
   [ "$p" = "eu_sales" ] && bucket="$EU_BUCKET" || bucket="$SHOP_BUCKET"
   step "Pipeline: $p"
-  if [ "$p" = "shop_orders" ]; then
+  if [ "$fresh" = "--resume" ]; then
+    :   # data was already seeded by the stopped run
+  elif [ "$p" = "shop_orders" ]; then
     [ -n "${MONGO_URI:-}" ] || die "MONGO_URI is missing in .env (needed for shop_orders)."
     make -s mongo-ssm
     make -s chaos target=shop_orders || die "Seeding MongoDB failed."
@@ -100,7 +114,7 @@ run_pipeline() {   # $1 = eu_sales | shop_orders, $2 = --fresh (optional)
   if [ "$fresh" = "--fresh" ]; then
     aws s3 rm "s3://$bucket/processed/run_date=$(date +%F)/" --recursive --quiet
     green "✔ Cleared today's partition so the pipeline writes fresh data"
-  elif aws s3 ls "s3://$bucket/processed/run_date=$(date +%F)/" >/dev/null 2>&1; then
+  elif [ "$fresh" != "--resume" ] && aws s3 ls "s3://$bucket/processed/run_date=$(date +%F)/" >/dev/null 2>&1; then
     yellow "ℹ Today's partition already exists → the job will skip writing (idempotency)."
     yellow "  Use '$0 $p --fresh' to rewrite today's data."
   fi
@@ -112,9 +126,11 @@ run_pipeline() {   # $1 = eu_sales | shop_orders, $2 = --fresh (optional)
     | grep --line-buffered -E "Routing to|GATE|MISSION|CRITICAL|AUTO-VALIDATION|Medic requested|escalat" \
     | grep --line-buffered -vE "pinecone|httpx"
   if grep -q "MISSION VERIFIED" "$log"; then
+    rm -f "$LANGGRAPH_CHECKPOINT_DB"
     green "✅ $p: MISSION VERIFIED"
   else
-    red "❌ $p did not verify — see the last lines of $log"; tail -n 15 "$log"; return 1
+    red "❌ $p did not verify — see the last lines of $log"; tail -n 15 "$log"
+    yellow "  If it stopped on the Gemini quota, continue later with: $0 $p --resume"; return 1
   fi
 }
 
@@ -253,7 +269,7 @@ main() {
     status) load_env; make -s aws-status ;;
     pause) load_env; make -s aws-pause ;;
     destroy) load_env; confirm_destroy ;;
-    -h|--help|help) sed -n '2,17p' "$0" ;;
+    -h|--help|help) sed -n '2,18p' "$0" ;;
     *) die "Unknown command '$cmd'. Run '$0 help'." ;;
   esac
 }
