@@ -18,6 +18,35 @@ PROMPTS_DIR = os.path.join(BASE_DIR, "agents", "prompts")
 # 4. Global Settings
 TEMPERATURE = 0
 
+# Canonical knowledge-base queries. These used to be issued by the LLM (it was told the exact
+# strings in agents/prompts/architect.md); now Python issues them directly, so discovery costs
+# zero LLM calls. Keep the strings identical to the prompt so retrieval stays the same.
+KB_QUERIES = {
+    "arch_standard_python": (
+        "STANDARD PYTHON DATA PIPELINES CRITICAL RULES: cloud_get mandatory credentials, "
+        "storage_options to_parquet, create_engine extraction loop same try block, "
+        "FLAG_AS_SUSPICIOUS is_suspicious quality_standards pandas, type casting float64 Int64 "
+        "quantity columns, destination_uri os.getenv DESTINATION_URI, idempotency partition "
+        "run_date, push_to_gateway prometheus_client, requirements.txt repo root"
+    ),
+    "arch_standard_trino": (
+        "STANDARD TRINO DDL GENERATION setup_trino.sql: CREATE SCHEMA DROP TABLE CREATE TABLE "
+        "3-part catalog.schema.table, external_location PARQUET partitioned_by ARRAY run_date, "
+        "data types VARCHAR DECIMAL INTEGER TIMESTAMP BOOLEAN, hive external table s3 gs abfss protocol"
+    ),
+    "arch_standard_mongodb": (
+        "MONGODB EXTRACTION STANDARD semi-structured source: pymongo batch flatten "
+        "json_normalize record_path ObjectId mixed types"
+    ),
+}
+
+
+def kb_result_usable(result) -> bool:
+    """True when a query_vector_store result actually carries a standard (not an error / empty)."""
+    text = str(result or "").strip().lower()
+    return bool(text) and not any(bad in text for bad in (
+        "no relevant guidelines found", "pinecone not initialized", "error querying"))
+
 DEFAULT_REQUIRED_ARTIFACTS = [
     "scripts/{pipeline_name}.py",
     "sql/setup_trino.sql",

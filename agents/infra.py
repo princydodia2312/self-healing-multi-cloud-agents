@@ -26,6 +26,7 @@ from agents.constants import (
     INFRA_PROMPT_FILE,
     PROMPTS_DIR,
     TEMPERATURE,
+    kb_result_usable,
 )
 
 logger = logging.getLogger("INFRA")
@@ -295,6 +296,19 @@ def infra_node(state: AgentState, config: RunnableConfig = None):
     required_standards = ["infra_standard_iac"]
     has_all_standards = all(key in collected_specs for key in required_standards)
 
+    # DETERMINISTIC IAC DISCOVERY (no LLM call): the iac query is fully determined by the cloud
+    # (_IAC_QUERIES), so Python issues it. LLM discovery stays only as the fallback when the KB
+    # returns nothing usable.
+    if not has_all_standards and not medic_triggered_fix:
+        _iac_res = query_vector_store.invoke(
+            {"query": _IAC_QUERIES.get("databricks" if is_databricks else cloud_provider, _IAC_QUERIES["aws"])})
+        if kb_result_usable(_iac_res):
+            collected_specs["infra_standard_iac"] = str(_iac_res)
+            logger.info("🎯 Smart Mapping (deterministic): infra_standard_iac secured.")
+        else:
+            logger.warning("Deterministic IaC KB lookup returned nothing usable — LLM fallback.")
+        has_all_standards = all(key in collected_specs for key in required_standards)
+
     selected_keys = []
     orchestration_phase_instruction = None
     codegen_errors: list[str] = []  # deterministic-generation failures (generator bugs)
@@ -353,16 +367,17 @@ def infra_node(state: AgentState, config: RunnableConfig = None):
             tf_required = ["terraform/providers.tf", "terraform/main.tf", "terraform/variables.tf", "terraform/outputs.tf", "terraform/terraform.tfvars"]
             tf_files_missing = not files_exist_in_state(tf_required, written_files)
             if tf_files_missing:
-                # First run: files don't exist yet — need both write and execute
-                selected_keys = ["write_terraform_config", "execute_terraform"]
+                # First run: the LLM writes the .tf files; Python then runs init/plan/apply
+                # (see "DETERMINISTIC TERRAFORM" after the tool loop) — no LLM execute call.
+                selected_keys = ["write_terraform_config"]
             elif medic_triggered_fix:
                 # Fix mode: files exist but execute failed. Allow targeted rewrite (dedup
                 # in the execution loop gates which files can actually be overwritten based
-                # on healing_context). Always include execute so the fix is applied immediately.
-                selected_keys = ["write_terraform_config", "execute_terraform"]
+                # on healing_context); Python re-applies after the rewrite.
+                selected_keys = ["write_terraform_config"]
             else:
-                # Files exist, no fix needed — just re-run execute (e.g. state recovery)
-                selected_keys = ["execute_terraform"]
+                # Files exist, no fix needed — Python re-runs terraform (state recovery), no LLM.
+                selected_keys = []
 
         # Step B: Orchestration & CI/CD
         else:
@@ -436,9 +451,29 @@ def infra_node(state: AgentState, config: RunnableConfig = None):
             selected_keys.append("push_to_github")
         logger.info("🔧 MEDIC BYPASS: patch_project_file + push_to_github enabled for fix cycle.")
 
+    # 4b. DETERMINISTIC ACTIONS (no LLM): terraform init/plan/apply and the git push have fully-known
+    # arguments, so Python runs them. The LLM keeps the judgement work (writing .tf files, patches).
+    _tf_required = ["terraform/providers.tf", "terraform/main.tf", "terraform/variables.tf",
+                    "terraform/outputs.tf", "terraform/terraform.tfvars"]
+    python_tf_needed = (not is_databricks and has_all_standards and not tf_done)
+    python_push_needed = "push_to_github" in selected_keys
+    selected_keys = [k for k in selected_keys if k not in ("execute_terraform", "push_to_github")]
+    if (medic_triggered_fix and not state.get("healing_context", "").strip()
+            and state.get("last_agent") == "architect" and tf_done):
+        # Scenario B1: the Architect already applied + validated the fix; Infra only re-pushes.
+        selected_keys = [k for k in selected_keys if k != "patch_project_file"]
+    if python_push_needed and not selected_keys:
+        # Nothing left for the LLM (no patch / no file to write) → push directly, no LLM call.
+        logger.info("🤖 Deterministic push: no LLM turn needed.")
+    if python_tf_needed and not selected_keys and files_exist_in_state(_tf_required, written_files):
+        logger.info("🤖 Deterministic terraform: files exist, re-running init/plan/apply without the LLM.")
+
+    llm_turn_needed = bool(selected_keys)
+
     # 5. EARLY EXIT GATE
     # If all files exist, all actions are done, and standards are met, signal completion.
-    if not selected_keys and has_all_standards and not codegen_errors:
+    if (not llm_turn_needed and not python_tf_needed and not python_push_needed
+            and has_all_standards and not codegen_errors):
         logger.info("🎯 MISSION ACCOMPLISHED: Infrastructure node finalized.")
         return {
             "messages": [HumanMessage(content="INFRA_COMPLETE: Infrastructure and CI/CD are finalized.")],
@@ -570,11 +605,15 @@ def infra_node(state: AgentState, config: RunnableConfig = None):
 
     messages = [{"role": "system", "content": system_prompt}] + safe_recent_messages(state["messages"], limit=5)
 
-    # 8. LLM INVOCATION
-    response = llm_with_tools.invoke(messages)
+    # 8. LLM INVOCATION (skipped when Python can do the whole step — deterministic terraform/push)
+    if llm_turn_needed:
+        response = llm_with_tools.invoke(messages)
+        new_messages = [response]
+    else:
+        response = None
+        new_messages = []
 
     # 9. TOOL EXECUTION & STATE UPDATES
-    new_messages = [response]
     updated_files = list(written_files)
     infra_success_detected = tf_done
     validation_errors: list[str] = list(codegen_errors)  # codegen failures + tool-loop failures → Medic signal
@@ -591,7 +630,7 @@ def infra_node(state: AgentState, config: RunnableConfig = None):
     patched_tf = False                 # ...and that file was a .tf (→ the live infra needs apply)
     executed_terraform_this_turn = False  # the LLM already called execute_terraform this turn
 
-    if response.tool_calls:
+    if response is not None and response.tool_calls:
         for tool_call in response.tool_calls:
             t_name = tool_call["name"]
             # Sanitize args: LLMs occasionally emit "key=" instead of "key" in JSON
@@ -938,6 +977,50 @@ def infra_node(state: AgentState, config: RunnableConfig = None):
                 any_tool_error = True
 
             new_messages.append(ToolMessage(tool_call_id=tool_call["id"], content=str(result)))
+
+    # 9a. DETERMINISTIC TERRAFORM (no LLM call): once all five .tf files exist and passed
+    # validation, run init → plan → apply here. Each result is appended VERBATIM as a message
+    # ("SUCCESS: Terraform …" / "FAILED: Terraform …"), the exact shape the Medic's
+    # _terraform_command_failure + ownership routing read, so a failure heals exactly as before.
+    if (python_tf_needed and not infra_success_detected and not any_tool_error
+            and not validation_errors and files_exist_in_state(_tf_required, updated_files)):
+        for _cmd in ("init", "plan", "apply"):
+            _tf_out = str(execute_terraform.invoke({"command": _cmd}))
+            new_messages.append(HumanMessage(content=_tf_out[:4000]))
+            executed_terraform_this_turn = True
+            if _cmd == "apply" and ("apply complete" in _tf_out.lower()
+                                    or _tf_out.lstrip().startswith("SUCCESS: Terraform apply")):
+                infra_success_detected = True
+                logger.info("✅ Deterministic terraform apply complete.")
+            elif not _tf_out.lstrip().startswith("SUCCESS"):
+                any_tool_error = True
+                logger.warning(f"🚫 Deterministic terraform {_cmd} failed — routing to Medic.")
+                break
+
+    # 9a-2. DETERMINISTIC PUSH (no LLM call): the push has no open inputs. Fires when the gate
+    # wanted push_to_github and everything this turn succeeded (a patch, if any, validated clean).
+    if (python_push_needed and not push_attempted and not any_tool_error and not validation_errors
+            and (infra_success_detected or is_databricks)
+            and not (medic_triggered_fix and "patch_project_file" in selected_keys and not patch_applied)):
+        _first = (healing_context or "").strip().splitlines()[0][:72] if (healing_context or "").strip() else ""
+        _msg = f"heal: {_first}" if (medic_triggered_fix and _first) else "deploy: generated pipeline artifacts"
+        logger.info("🤖 Deterministic push_to_github.")
+        _push = str(push_to_github.invoke({"project_id": project_id, "commit_message": _msg}))
+        new_messages.append(HumanMessage(content=f"[push_to_github] {_push[:800]}"))
+        push_attempted = True
+        if "SECURITY GATE FAILED" in _push:
+            github_success = False
+            any_tool_error = True
+            logger.error("🚫 Pre-push security gate BLOCKED the deploy — escalating for a fix.")
+        elif "STATUS: SUCCESS" in _push.upper():
+            github_success = True
+            _sha = re.search(r"SHA:\s*([a-f0-9]{40})", _push)
+            if _sha:
+                last_push_sha = _sha.group(1)
+                logger.info(f"📌 Commit SHA captured: {last_push_sha}")
+        else:
+            any_tool_error = True
+            logger.warning("🚫 Deterministic push did not report SUCCESS — routing to Medic.")
 
     # 9b. DETERMINISTIC HEAL COMPLETION (any infra fix that changed live Terraform)
     # A SUCCESSFUL infra patch to a Terraform resource is mechanically determined to need two

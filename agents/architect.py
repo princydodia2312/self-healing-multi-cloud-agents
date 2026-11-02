@@ -13,8 +13,10 @@ from agents.state import AgentState
 from agents.constants import (
     ARCHITECT_PROMPT_FILE,
     DEFAULT_REQUIRED_ARTIFACTS,
+    KB_QUERIES,
     PROMPTS_DIR,
     TEMPERATURE,
+    kb_result_usable,
 )
 from utils.prompt_utils import format_prompt
 from utils.file_utils import read_file
@@ -218,6 +220,58 @@ def architect_node(state: AgentState, config: RunnableConfig = None):
     has_all_standards = all(key in collected_specs for key in required_knowledge_keys)
     schema_discovered = state.get("schema_discovered", False)
 
+    # DETERMINISTIC DISCOVERY + SCHEMA (no LLM calls). Both steps have fully-known arguments:
+    # the canonical KB query strings (agents/constants.KB_QUERIES) and the source table/db_type
+    # from config. Python calls the SAME tools directly; the LLM path below remains only as the
+    # fallback when a step cannot be done here (empty KB result, Databricks, a failed read).
+    pre_messages: list = []
+    pre_tool_error = False
+    if not is_fix_mode and not is_databricks:
+        for _key in [k for k in required_knowledge_keys if k not in collected_specs]:
+            _q = KB_QUERIES.get(_key)
+            if not _q:
+                continue
+            _res = query_vector_store.invoke({"query": _q})
+            if kb_result_usable(_res):
+                collected_specs[_key] = str(_res)
+                logger.info(f"🎯 Smart Mapping (deterministic): {_key} secured.")
+            else:
+                logger.warning(f"Deterministic KB lookup for {_key} returned nothing usable — LLM fallback.")
+        has_all_standards = all(key in collected_specs for key in required_knowledge_keys)
+
+        if has_all_standards and not schema_discovered:
+            _table = db_conf.get("default_table", "")
+            _db_type = db_conf.get("db_type", "postgres") or "postgres"
+            _schema = read_data_schema.invoke({"table_name": _table, "db_type": _db_type})
+            if isinstance(_schema, dict) and _schema.get("status") == "success":
+                schema_discovered = True
+                logger.info("✅ Schema discovered (deterministic). Unlocking Implementation phase.")
+                pre_messages.append(HumanMessage(content=(
+                    f"SCHEMA DISCOVERY RESULT (read_data_schema table_name='{_table}', "
+                    f"db_type='{_db_type}'):\n{json.dumps(_schema, default=str, indent=1)}"
+                )))
+            else:
+                pre_tool_error = True
+                logger.error(f"❌ Schema discovery FAILED — staying in Schema Phase. {_schema}")
+                pre_messages.append(HumanMessage(content=(
+                    f"SCHEMA DISCOVERY FAILED (read_data_schema table_name='{_table}', "
+                    f"db_type='{_db_type}'): {_schema}"
+                )))
+                return {
+                    "messages": pre_messages,
+                    "written_files": written_files,
+                    "collected_specs": collected_specs,
+                    "schema_discovered": False,
+                    "target_infra": target_infra_name,
+                    "architect_status": "pending",
+                    "next_step": "supervisor",
+                    "last_agent": "architect",
+                    "agent_error": True,
+                    "healing_context": "",
+                    "medic_fix_requested": _keep_medic_fix_requested(
+                        state.get("medic_fix_requested", False), state.get("github_done", False)),
+                }
+
     missing_artifacts = []
     codegen_errors: list[str] = []  # deterministic-generation failures (generator bugs)
 
@@ -292,7 +346,9 @@ def architect_node(state: AgentState, config: RunnableConfig = None):
                 f"CURRENT PHASE: IMPLEMENTATION. "
                 f"Call write_project_file for each of these missing files "
                 f"(use the path as the exact filename argument): {', '.join(missing_artifacts)}. "
-                "Do NOT write any file not listed here."
+                "Do NOT write any file not listed here. "
+                "Write ALL of them in THIS response — one write_project_file call per file, "
+                "all in the same turn."
             )
         else:
             phase_instruction = "CURRENT PHASE: IMPLEMENTATION. All artifacts written. Return status."
@@ -380,21 +436,25 @@ def architect_node(state: AgentState, config: RunnableConfig = None):
                 system_prompt += f"\n### arch_standard_trino\n{collected_specs['arch_standard_trino']}\n"
 
     # 6. PREPARE CONVERSATION
+    # pre_messages = the deterministic schema result from THIS visit (so the implementation turn
+    # sees the real columns/samples exactly like a read_data_schema tool result).
     recent_messages = safe_recent_messages(state["messages"])
     messages = [
         {"role": "system", "content": system_prompt}
-    ] + recent_messages + [
+    ] + recent_messages + pre_messages + [
         {"role": "user", "content": state.get("task", "Execute the current phase of the pipeline design.")}
     ]
 
     # 7. LLM CALL & TOOL LOOP
     # Up to 3 iterations so the LLM can self-correct when it skips already-written files
     # instead of writing the one still missing (e.g. requirements.txt).
-    any_tool_error = False
+    any_tool_error = pre_tool_error
     patch_clean_files: set = set()  # tracks files successfully patched+validated across all iters
-    new_messages = []
+    new_messages = list(pre_messages)
 
-    for _iter in range(3):
+    _nothing_to_do = (not is_fix_mode and has_all_standards and schema_discovered
+                      and "write_project_file" in allowed_tool_names and not missing_artifacts)
+    for _iter in range(0 if _nothing_to_do else 3):
         response = llm_with_tools.invoke(messages)
         new_messages.append(response)
         messages.append(response)

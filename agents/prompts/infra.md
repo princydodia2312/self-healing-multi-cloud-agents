@@ -41,7 +41,7 @@ artifact belongs in `agents/codegen.py`.
 - **Variable Values:** `terraform.tfvars` MUST be populated with concrete values from context. Terraform auto-loads it — do NOT pass `-var` flags. **GCP:** `project_id` is the GCP project id (`CLOUD_SETUP.gcp_project_id`) — NEVER the pipeline `project_id` (that is the dashboard label); using the pipeline_id targets a non-existent project and apply fails.
 - **State Management:** Use concrete string literals in backend blocks (no `var.*`). Values from `CLOUD_SETUP` in context.
 - **Safety:** `force_destroy = true` is FORBIDDEN on storage resources. Add `prevent_destroy = true` lifecycle block.
-- **Deployment:** Execute `execute_terraform` (init & apply). Do not proceed until infrastructure is physically provisioned.
+- **Deployment:** Write all five files with `write_terraform_config` in ONE response. You do NOT run Terraform: after the files pass validation, the system runs `terraform init/plan/apply` itself and reports any failure to the Medic.
 
 ### 3. CONTAINERIZATION, ORCHESTRATION & CI/CD — CODE-OWNED
 The Dockerfile, the six K8s manifests and the GitHub Actions deploy workflow are generated
@@ -49,7 +49,7 @@ deterministically from config and validated before this phase — you never writ
 written-files list shows them, they are done. Do not regenerate, do not re-validate.
 
 ### 5. PERSISTENCE & SELF-HEALING
-- **GitHub Sync:** Call `push_to_github` only after all artifacts are verified and Terraform apply is successful.
+- **GitHub Sync:** The system pushes to GitHub automatically once all artifacts are verified and Terraform apply succeeded — you do not call `push_to_github` for a normal deploy.
 - **Error Correction:** If Medic reports failure, re-query knowledge base for specific error signature and fix. An empty Knowledge Base result is never a reason to stop — use Medic's `healing_instructions` and your own expertise.
 
 ### Fix Mode (healing_context present)
