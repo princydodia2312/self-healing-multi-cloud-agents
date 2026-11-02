@@ -240,6 +240,17 @@ resource "aws_iam_role_policy" "irsa_eu_sales" {
         ]
       },
       {
+        # Trino is SHARED by both pipelines and runs as the role of the pipeline deployed LAST.
+        # After an eu_sales deploy it must still read the shop_orders data lake → READ-ONLY here
+        # (the eu_sales job itself never writes to another pipeline's bucket).
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:ListBucket"]
+        Resource = [
+          "arn:aws:s3:::princy2312-shop-orders-insights-data",
+          "arn:aws:s3:::princy2312-shop-orders-insights-data/*",
+        ]
+      },
+      {
         Effect = "Allow"
         Action = [
           "glue:GetDatabases", "glue:GetDatabase", "glue:CreateDatabase",
