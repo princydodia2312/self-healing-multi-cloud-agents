@@ -31,12 +31,12 @@ def run():
     partition_uri = f"{destination_uri}run_date={run_date}/"
     parsed = urlparse(partition_uri)
     bucket = parsed.netloc
-    prefix = parsed.path.lstrip("/")
+    prefix = parsed.path.lstrip('/')
 
     if _CLOUD == "aws":
-        s3 = boto3.client("s3")
+        s3 = boto3.client('s3')
         response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
-        if response.get("KeyCount", 0) > 0:
+        if response.get('KeyCount', 0) > 0:
             logging.info(f"Partition run_date={run_date} already populated. Skipping.")
             return
     elif _CLOUD == "gcp":
@@ -46,8 +46,8 @@ def run():
             logging.info("Destination already populated. Skipping.")
             return
     elif _CLOUD == "azure":
-        container_name = bucket.split("@")[0]
-        client = BlobServiceClient.from_connection_string(os.getenv("AZURE_STORAGE_CONNECTION_STRING"))
+        container_name = bucket.split('@')[0]
+        client = BlobServiceClient.from_connection_string(os.getenv('AZURE_STORAGE_CONNECTION_STRING'))
         container = client.get_container_client(container_name)
         blobs = list(container.list_blobs(name_starts_with=prefix))
         if blobs:
@@ -89,19 +89,18 @@ def run():
     try:
         engine = create_engine(connection_string)
         for i, chunk in enumerate(pd.read_sql_query(query, engine, chunksize=1000)):
-
             # 3a. Date conversion
             chunk['order_date'] = pd.to_datetime(chunk['order_date'], errors='coerce')
 
             # 3b. Business rules
-            # monetary_integrity
+            # monetary_integrity: unit_price > 0.0
             chunk['unit_price'] = pd.to_numeric(chunk['unit_price'], errors='coerce')
             _before = len(chunk)
             chunk = chunk[chunk['unit_price'] > 0.0]
             rejected_by_reason['monetary_integrity'] = \
                 rejected_by_reason.get('monetary_integrity', 0) + (_before - len(chunk))
 
-            # temporal_validity
+            # temporal_validity: order_date <= current timestamp
             _before = len(chunk)
             _future = chunk['order_date'] > pd.Timestamp.now()
             if _future.any():
@@ -110,23 +109,20 @@ def run():
             rejected_by_reason['temporal_validity'] = \
                 rejected_by_reason.get('temporal_validity', 0) + (_before - len(chunk))
 
-            # completeness_enforcement
+            # completeness_enforcement: order_id not null/empty
             _before = len(chunk)
-            chunk = chunk.dropna(subset=['order_id'])
-            chunk = chunk[chunk['order_id'] != '']
+            chunk = chunk[chunk['order_id'].notna() & (chunk['order_id'].astype(str).str.strip() != '')]
             rejected_by_reason['completeness_enforcement'] = \
                 rejected_by_reason.get('completeness_enforcement', 0) + (_before - len(chunk))
 
-            # currency_standardization
+            # currency_standardization: currency in ['EUR', 'GBP'], default 'EUR'
             chunk['currency'] = chunk['currency'].where(chunk['currency'].isin(['EUR', 'GBP']), other='EUR')
 
-            # volume_sanity_check + quantity_validity (FLAG_AS_SUSPICIOUS)
+            # volume_sanity_check & quantity_validity: quantity < 1000 and quantity > 0
             chunk['quantity'] = pd.to_numeric(chunk['quantity'], errors='coerce')
-            _flag_volume_sanity_check = chunk['quantity'] >= 1000
-            _flag_quantity_validity = chunk['quantity'] <= 0
-            chunk['is_suspicious'] = _flag_volume_sanity_check | _flag_quantity_validity
+            chunk['is_suspicious'] = chunk['quantity'].isna() | (chunk['quantity'] >= 1000) | (chunk['quantity'] <= 0)
 
-            # 3c. Type casting
+            # 3c. Type casting — cast float64 → Int64 for integer/count/quantity columns
             int_cols = [c for c in chunk.select_dtypes(include='float64').columns
                         if any(kw in c.lower() for kw in ['quantity', 'qty', 'count', 'units'])]
             for col in int_cols:

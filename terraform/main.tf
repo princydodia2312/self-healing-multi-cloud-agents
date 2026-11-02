@@ -1,8 +1,8 @@
 resource "aws_s3_bucket" "data_bucket" {
   bucket = var.bucket_name
-  tags   = { Project = var.project_id }
-  lifecycle {
-    prevent_destroy = true
+
+  tags = {
+    Project = var.project_id
   }
 }
 
@@ -28,8 +28,9 @@ resource "aws_s3_bucket_versioning" "versioning" {
   }
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "encryption_configuration" {
+resource "aws_s3_bucket_server_side_encryption_configuration" "encryption" {
   bucket = aws_s3_bucket.data_bucket.id
+
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "aws:kms"
@@ -39,14 +40,17 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "encryption_config
 
 resource "aws_s3_bucket_lifecycle_configuration" "lifecycle" {
   bucket = aws_s3_bucket.data_bucket.id
+
   rule {
     id     = "lifecycle_rule"
     status = "Enabled"
     filter {}
+
     transition {
       days          = 90
       storage_class = "STANDARD_IA"
     }
+
     transition {
       days          = 365
       storage_class = "GLACIER"
@@ -103,6 +107,7 @@ resource "aws_iam_policy" "s3_access_policy" {
       }
     ]
   })
+
   lifecycle {
     ignore_changes = [description, tags]
   }
