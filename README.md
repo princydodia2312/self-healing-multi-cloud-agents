@@ -197,6 +197,7 @@ make demo                 # ingest standards → seed 100 dirty rows → run the
 ./run_project.sh demo       # start AWS + show S3 / Trino / Grafana results (no new agent run)
 ./run_project.sh full       # run both pipelines end to end, then show results
 ./run_project.sh eu_sales   # or shop_orders; add --fresh to rewrite today's partition
+./run_project.sh eu_sales --resume   # continue a run that stopped (e.g. Gemini quota) where it left off
 ./run_project.sh ui         # Streamlit with a live Trino connection
 ./run_project.sh check      # tests + self-heal eval + security gate (offline, free)
 ./run_project.sh pause      # stop the database between sessions
@@ -228,11 +229,13 @@ The same steps are available from GitHub Actions in `run_agent.yml` (manual disp
 ```bash
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=...          # free key from https://aistudio.google.com/apikey
-# defaults: agents gemini-3.8-flash, falling back to gemini-3.6-flash → gemini-2.5-flash → gemini-3.5-flash-lite
+# defaults: one model per agent — architect gemini-3.8-flash · infra gemini-3.6-flash ·
+#           medic gemini-2.5-flash · supervisor gemini-3.5-flash-lite (override: LLM_MODEL_<AGENT>),
+#           each falling back through the other three
 #           NL/UI gemini-3.5-flash-lite · embeddings gemini-embedding-2 (1536-dim)
 ```
 
-To use OpenAI instead, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. After switching provider, run `make ingest` again, because embeddings from different models can't be mixed in one index. The free tier allows only about **20 requests per day per model** (reset at midnight Pacific time; your limits are shown in AI Studio), while one agent run needs roughly 40–80 model calls. That's why the agents fall back through several models, each with its own daily quota. Google may use free-tier prompts to improve its products.
+To use OpenAI instead, set `LLM_PROVIDER=openai` and `OPENAI_API_KEY`. After switching provider, run `make ingest` again, because embeddings from different models can't be mixed in one index. The free tier allows only about **20 requests per day per model** (reset at midnight Pacific time; your limits are shown in AI Studio). To fit in that budget, the agents call the LLM only for judgement work: writing the ETL script, the Trino DDL and the Terraform, and diagnosing CI or Terraform failures. Python does every step whose inputs are already known: the knowledge-base lookups, the schema read, `terraform init/plan/apply`, the git push, CI polling, and turning a local validation error into a fix request. A clean run needs about 12–20 model calls, and one heal cycle adds a few more. Each agent starts on its own model, so the four daily quotas are used in parallel. A model that reports its *daily* quota is used up is skipped for the rest of the run. If every model is exhausted, the run stops with a clear message, and `./run_project.sh <pipeline> --resume` continues it from the saved checkpoint (`logs/checkpoint_<pipeline>.sqlite`) without repeating finished steps. Google may use free-tier prompts to improve its products.
 
 > **Cost warning.** The AWS baseline (EKS + RDS) bills by the hour, about $230/month while running (`make cost`). Use `make aws-pause` between sessions and `make aws-resume` before a demo. Tear everything down with `make destroy-aws` or the `destroy.yml` workflow after the evaluation.
 
@@ -285,7 +288,7 @@ Problems found during the real runs, and how they were fixed in the system (not 
 | Trino DDL declared `DECIMAL`/`INTEGER` while pandas wrote `double`/`int64` → "Failed to read Parquet file" | SQL standard updated; DDL types are normalised to `DOUBLE`/`BIGINT` at write time; validator check |
 | Terraform executed before `main.tf` was written | `execute_terraform` refuses `plan`/`apply` until `providers.tf` and `main.tf` exist |
 | Gemini rejected message histories that start with a tool call | A user turn is inserted where Gemini's turn-order rules require one |
-| Free tier: ~20 requests/day per model | Agents fall back through four Gemini models |
+| Free tier: ~20 requests/day per model | One model per agent, deterministic steps run in Python (about 12–20 calls per clean run), daily-exhausted models skipped, `--resume` after a stop |
 | Shared Trino could not read the suffixed `eu_sales` bucket after the second deploy | Shared IRSA policy extended to `*-insights-data-*` |
 
 ## 8. Testing and evaluation

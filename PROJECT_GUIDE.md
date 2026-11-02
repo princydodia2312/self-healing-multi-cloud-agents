@@ -274,7 +274,7 @@ sequenceDiagram
     A->>A: query_vector_store, read_data_schema, write_project_file
     A->>S: architect_status=completed
     S->>I: route to infra
-    I->>I: write_terraform_config, execute_terraform (init/plan/apply)
+    I->>I: LLM: write_terraform_config · Python: execute_terraform (init/plan/apply)
     I->>I: codegen Dockerfile, k8s, workflow
     I->>GH: push_to_github (security gate first)
     I->>S: infra_status=completed
@@ -377,16 +377,16 @@ pipeline job running on AWS, and (4) the self-healing loop. Each is traced below
 3. **Build the task:** the objective `eu_sales_objective.md` is filled in by `utils/prompt_utils.py::format_prompt()`.
 4. **Launch:** `_launch()` sets env vars (`PROJECT_ID`, `CLOUD_PROVIDER=aws`, `PIPELINE_PLATFORM`), creates the state with `agents/state.py::build_initial_state()`, and runs `graph.app.stream(...)` with `recursion_limit=200`.
 5. **Supervisor** (`agents/supervisor.py::supervisor_node`): `last_agent == "None"` → *Rule 0* → route to `architect` (no LLM call).
-6. **Architect** (`agents/architect.py::architect_node`) works in **phases**, one tool allowed per phase (`tool_choice="required"`):
-   - *Discovery:* `query_vector_store` for the Python and Trino standards (plus the MongoDB standard for `shop_orders`); results stored in `state["collected_specs"]`.
-   - *Schema:* `read_data_schema("raw_eu_sales", "postgres")` → columns + 3 sample rows. Sets `schema_discovered=True`.
+6. **Architect** (`agents/architect.py::architect_node`) works in **phases**:
+   - *Discovery (Python, no LLM):* `query_vector_store` with fixed queries (`agents/constants.py::KB_QUERIES`) for the Python and Trino standards (plus the MongoDB standard for `shop_orders`); results stored in `state["collected_specs"]`. If the knowledge base returns nothing usable, the LLM does the discovery instead.
+   - *Schema (Python, no LLM):* `read_data_schema("raw_eu_sales", "postgres")` → columns + 3 sample rows, added to the LLM's context. Sets `schema_discovered=True`. If the read fails, the run goes to the Medic.
    - *Codegen first:* `agents/codegen.py::ensure_architect_artifacts()` writes `requirements.txt` and `dashboards/monitoring_specs.json` deterministically.
-   - *Implementation:* the LLM writes `scripts/pipe_eu_sales_to_s3.py` and `sql/setup_trino.sql` via `write_project_file`. Each write is checked by `validate_generated_code` (auto-validation). When both exist → `architect_status="completed"`.
+   - *Implementation (LLM, one turn):* the LLM writes `scripts/pipe_eu_sales_to_s3.py` and `sql/setup_trino.sql` via `write_project_file`, both in the same response. Each write is checked by `validate_generated_code` (auto-validation). When both exist → `architect_status="completed"`.
 7. **Supervisor:** Rule A → route to `infra`.
 8. **Infra** (`agents/infra.py::infra_node`):
-   - *Terraform phase:* `write_terraform_config` for `providers.tf, main.tf, variables.tf, outputs.tf, terraform.tfvars`, then `execute_terraform` (`init → plan → apply`). This creates the data bucket, encryption, versioning, lifecycle, public-access block, a `processed/` marker and an IAM policy.
+   - *Terraform phase:* the iac standard is fetched in Python; the LLM writes `providers.tf, main.tf, variables.tf, outputs.tf, terraform.tfvars` with `write_terraform_config` in one turn; then **Python** runs `execute_terraform` (`init → plan → apply`) and passes any failure to the Medic verbatim. This creates the data bucket, encryption, versioning, lifecycle, public-access block, a `processed/` marker and an IAM policy.
    - *Codegen:* `ensure_infra_artifacts()` renders the `Dockerfile`, 6 files in `k8s/`, and `.github/workflows/pipe_eu_sales_to_s3_pipeline.yml`, each validated.
-   - *Push:* `push_to_github` first runs the **security gate** (`policy/security_analyzer.py::analyze`); if there is any HIGH finding the push is refused. Otherwise it commits as `github-actions[bot]` and pushes. Sets `infra_status="completed"`, `last_push_sha`.
+   - *Push (Python, no LLM):* `push_to_github` first runs the **security gate** (`policy/security_analyzer.py::analyze`); if there is any HIGH finding the push is refused. Otherwise it commits as `github-actions[bot]` and pushes. Sets `infra_status="completed"`, `last_push_sha`.
 9. **Supervisor:** Rule B → `medic`.
 10. **Medic** (`agents/medic.py::medic_node`) calls `fetch_github_action_logs(head_sha=...)`. While the run is in progress the tool returns `PENDING` and the Medic waits with exponential backoff (30 s, 60 s, 120 s, … max 300 s, 5 attempts). When the run is green, Python sets `mission_status="verified"` and stores the success in Pinecone (`dynamic-experience`).
 11. **Supervisor:** `mission_status == "verified"` → `FINISH`.
@@ -417,7 +417,7 @@ Inside the Kubernetes **Job** (`k8s/job.yaml`):
 
 ### 4.4 Feature 3 — Self-healing (the novelty)
 1. A failure shows up as either (a) a local validation error from `validate_generated_code`, (b) a Terraform error, or (c) a failing GitHub Actions log.
-2. The Medic builds a **validation summary in Python** (`_extract_validation_summary`) — the LLM is told exactly which files FAILED and which are CLEAN.
+2. The Medic builds a **validation summary in Python** (`_extract_validation_summary`) — the LLM is told exactly which files FAILED and which are CLEAN. **Fast path:** for a local validation error (case a), the file, its owner and the verbatim validator text are already known, so Python builds the fix request without an LLM call (`_recent_local_validation_failure`). Terraform and CI failures (b, c) go to the LLM for diagnosis.
 3. The LLM must call `request_fix(target_agent, issue_description, suggested_fix, evidence_quote)`.
 4. **Evidence gate** (`tools.request_fix`): the quote must contain a real error marker (`Error:`, `Traceback`, `Exception`, `FAILED`, `exit code`, …) — otherwise rejected.
 5. **Provenance check** (`medic._evidence_has_provenance`): the quote must appear in real tool/log output from this run — a made-up quote is not routed.
@@ -788,7 +788,8 @@ push refused (and CI fails).
 
 1. **"Isn't this just ChatGPT writing code?"** No. Routing, file ownership, validation, security and success are decided in Python. The LLM only handles judgement tasks (script, DDL, Terraform, diagnosis), and its fixes need verbatim evidence.
 2. **Why not let the LLM generate the Kubernetes files too?** They have one correct shape. Generating them deterministically (`codegen.py`) removes random errors and is covered by golden tests.
-3. **What if Gemini returns an invalid response?** Tool calls are forced (`tool_choice="required"`), every file is validated, invalid files route to the Medic, and Gemini errors trigger retries and fallback models.
+3. **Which steps use the LLM?** Only judgement work: the ETL script, the Trino DDL, the Terraform files, and diagnosing Terraform/CI failures. Knowledge-base lookups, the schema read, `terraform apply`, the git push, CI polling, routing and local-validation fix requests are Python. That keeps a clean run at about 12–20 Gemini calls (each agent uses its own model) and makes those steps repeatable.
+3b. **What if Gemini returns an invalid response?** Tool calls are forced (`tool_choice="required"`), every file is validated, invalid files route to the Medic, and Gemini errors trigger retries and fallback models.
 4. **What if the Medic keeps failing?** Same error 3× or 8 total rounds → `escalated` → exit 1. It never loops forever.
 5. **Can the project work without Pinecone?** It runs, but `query_vector_store` returns "Pinecone not initialized", so agents lack the standards and generated code quality drops. The offline eval uses a local keyword search instead.
 6. **Can it work without the database?** The pipeline cannot extract, so the Job fails; the S3 data already written stays queryable.
