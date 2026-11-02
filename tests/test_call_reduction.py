@@ -219,3 +219,73 @@ class TestInfraDeterministic:
             out = infra.infra_node(st)
         llm.bind_tools.return_value.invoke.assert_not_called()
         assert push.invoke.called and out["github_done"] is True
+
+
+# ── Medic fast path: local validation failures need no LLM diagnosis ────────────────────────
+
+from agents import medic  # noqa: E402
+from langchain_core.messages import HumanMessage, ToolMessage  # noqa: E402
+
+_RUFF = ("VALIDATION FAILED (ruff):\nF821 Undefined name `pd`\n --> scripts/pipe_eu_sales.py:12:5")
+
+
+def _medic_state(msgs, **kw):
+    s = _state(messages=msgs, infra_status="pending", last_agent="architect", agent_error=True)
+    s.update(kw)
+    return s
+
+
+class TestMedicFastPath:
+    def _run(self, st):
+        llm = _llm_returning(AIMessage(content="should not be called"))
+        with patch.object(medic, "get_llm", return_value=llm), \
+             patch.object(medic, "query_vector_store", MagicMock(invoke=MagicMock(return_value="none"))):
+            out = medic.medic_node(st)
+        return out, llm.bind_tools.return_value.invoke
+
+    def test_architect_validation_failure_routes_without_llm(self):
+        tm = ToolMessage(tool_call_id="w1", content=(
+            "File scripts/pipe_eu_sales.py successfully written\n\n"
+            f"AUTO-VALIDATION FAILED — fix these errors in 'scripts/pipe_eu_sales.py':\n{_RUFF}"))
+        out, invoke = self._run(_medic_state([tm]))
+        invoke.assert_not_called()
+        assert out["medic_fix_target"] == "architect"
+        assert "scripts/pipe_eu_sales.py" in out["healing_context"]
+        assert "F821 Undefined name `pd`" in out["healing_context"]
+        assert out["fix_attempt"] == 1
+
+    def test_infra_validation_failure_routes_to_infra(self):
+        tm = ToolMessage(tool_call_id="t1", content=(
+            "File terraform/main.tf successfully written\n\nAUTO-VALIDATION FAILED — fix these errors in "
+            "'terraform/main.tf' and call the same generation tool again with corrected content:\n"
+            "VALIDATION FAILED (terraform validate):\nError: Unsupported argument \"acl\""))
+        out, invoke = self._run(_medic_state([tm], last_agent="infra"))
+        invoke.assert_not_called()
+        assert out["medic_fix_target"] == "infra"
+        assert 'Unsupported argument "acl"' in out["healing_context"]
+        assert "and call the same" not in out["healing_context"]
+
+    def test_same_error_three_times_escalates(self):
+        tm = ToolMessage(tool_call_id="w1", content=(
+            f"AUTO-VALIDATION FAILED — fix these errors in 'scripts/pipe_eu_sales.py':\n{_RUFF}"))
+        st = _medic_state([tm])
+        out, _ = self._run(st)
+        st.update(fix_attempt=out["fix_attempt"], last_fix_signature=out["last_fix_signature"],
+                  total_fix_attempts=out["total_fix_attempts"])
+        out, _ = self._run(st)
+        st.update(fix_attempt=out["fix_attempt"], last_fix_signature=out["last_fix_signature"],
+                  total_fix_attempts=out["total_fix_attempts"])
+        out, _ = self._run(st)
+        assert out.get("fix_loop_escalated") is True
+
+    def test_terraform_apply_failure_keeps_llm_path(self):
+        msgs = [HumanMessage(content="FAILED: Terraform apply\nERROR: AccessDenied s3:CreateBucket")]
+        _, invoke = self._run(_medic_state(msgs, last_agent="infra"))
+        assert invoke.called                     # diagnosis of a cloud error stays with the LLM
+
+    def test_old_failure_outside_window_is_ignored(self):
+        old = ToolMessage(tool_call_id="w0", content=(
+            f"AUTO-VALIDATION FAILED — fix these errors in 'scripts/pipe_eu_sales.py':\n{_RUFF}"))
+        later = [HumanMessage(content=f"step {i}") for i in range(10)]
+        _, invoke = self._run(_medic_state([old] + later))
+        assert invoke.called

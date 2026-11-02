@@ -175,6 +175,27 @@ def _latest_autovalidation_failure(messages: list) -> str:
     return latest
 
 
+def _recent_local_validation_failure(messages: list, window: int = 8) -> tuple[str, str]:
+    """(file, verbatim validator output) of the newest AUTO-VALIDATION failure in the last `window`
+    messages, or ("", ""). Only the most recent agent turn matters — an older failure that a later
+    patch already fixed must not trigger a new heal."""
+    for msg in reversed(messages[-window:]):
+        content = getattr(msg, "content", "") or ""
+        if not isinstance(content, str):
+            content = str(content)
+        hits = list(_AUTOVAL_FAIL_RE.finditer(content))
+        if hits:
+            m = hits[-1]
+            detail = content[m.end():].lstrip(" :\n")
+            # infra appends "and call the same generation tool again …:" before the errors
+            if detail.startswith("and call"):
+                detail = detail.split("\n", 1)[1] if "\n" in detail else ""
+            detail = detail.strip()
+            if detail:
+                return m.group(1).strip(), detail[:3000]
+    return "", ""
+
+
 _CI_FILE_RE = re.compile(r'(?:/app/)?(scripts/[\w./\-]+\.py|sql/[\w./\-]+\.sql)')
 
 
@@ -586,7 +607,36 @@ def medic_node(state: AgentState):
     fix_requested = False
     fix_signature_parts = []  # error text of each request_fix this turn → loop-convergence signature
     healing_context = ""  # Populated when request_fix is called; written to state for next agent
-    for i in range(5):
+
+    # 3-0. FAST PATH (no LLM): a LOCAL validation failure (ruff / custom validator / terraform
+    # validate on a freshly written file) already names the file AND carries the exact error text.
+    # The diagnosis is mechanical — owner = _owner_of_file, instructions = the verbatim validator
+    # output — so build the fix request in Python. The fix itself is still written by the owning
+    # agent's LLM. CI-runtime and terraform plan/apply failures keep the LLM diagnosis below.
+    # Convergence / escalation counters (3 same-error / 8 total) apply unchanged.
+    fast_path = False
+    if (state.get("infra_status") != "completed" and not verification_successful
+            and not logs_still_pending
+            and not _terraform_command_failure(list(state["messages"][-8:]))):
+        _fp_file, _fp_detail = _recent_local_validation_failure(state["messages"])
+        if _fp_file:
+            fast_path = True
+            fix_requested = True
+            fix_signature_parts.append(_fp_detail[:500])
+            healing_context = (
+                f"Target file(s) to fix: {_fp_file}\n\n"
+                f"AUTO-VALIDATION FAILED in '{_fp_file}'. Fix EXACTLY these errors (verbatim validator "
+                f"output below) with a minimal patch_project_file change. Do not rewrite the file and do "
+                f"not touch any other file.\n\n{_fp_detail}"
+            )
+            _fp_msg = HumanMessage(content=(
+                f"[medic fast path] Local validation failure in '{_fp_file}' → owner "
+                f"{_owner_of_file(_fp_file)}. Fix request built from the validator output (no LLM call)."))
+            messages.append(_fp_msg)
+            new_messages_for_state.append(_fp_msg)
+            logger.info(f"⚡ Medic fast path: {_fp_file} → {_owner_of_file(_fp_file)} (no LLM call).")
+
+    for i in range(0 if fast_path else 5):
         # Stop once the CI run is confirmed green OR still pending — BOTH are set deterministically
         # by the auto-poll above, so do NOT invoke the LLM (it could hallucinate a request_fix on an
         # already-verified run, or — the bug we are fixing — skip the re-fetch on a pending one and
