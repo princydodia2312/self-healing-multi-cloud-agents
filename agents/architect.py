@@ -158,7 +158,7 @@ def architect_node(state: AgentState, config: RunnableConfig = None):
     """
     logger.info("--- STARTING ARCHITECT NODE ---")
 
-    llm = get_llm(temperature=TEMPERATURE)
+    llm = get_llm(temperature=TEMPERATURE, agent="architect")
 
     # 1. INITIALIZE TRACKING & KNOWLEDGE STORAGE
     written_files = list(state.get("written_files", []))

@@ -401,7 +401,7 @@ def medic_node(state: AgentState):
     else:
         logger.info("🔒 DIAGNOSIS phase: CI log fetch locked until infra completes")
 
-    llm = get_llm(temperature=TEMPERATURE)
+    llm = get_llm(temperature=TEMPERATURE, agent="medic")
     llm_with_tools = llm.bind_tools(tools)
 
     project_id = state.get("project_id", "Unknown")

@@ -11,7 +11,8 @@ from agents import llm_factory
 
 
 _KEYS = ("LLM_PROVIDER", "LLM_MODEL", "NL_MODEL", "EMBED_MODEL", "EMBED_DIMENSIONS",
-         "LLM_MAX_RETRIES", "LLM_FALLBACK_MODEL", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+         "LLM_MAX_RETRIES", "LLM_FALLBACK_MODEL", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+         "LLM_MODEL_ARCHITECT", "LLM_MODEL_INFRA", "LLM_MODEL_MEDIC", "LLM_MODEL_SUPERVISOR")
 
 
 @pytest.fixture
@@ -174,3 +175,73 @@ class TestDefaults:
         d = _reload_defaults()
         assert d.llm_provider() == "anthropic"
         assert d.EMBED_MODEL == "text-embedding-3-small"
+
+
+class TestPerAgentModels:
+    def _models(self, env, agent):
+        fake = MagicMock()
+        with patch.object(llm_factory, "_gemini_chat_cls", return_value=fake):
+            llm_factory.get_llm(agent=agent)
+        return [c.kwargs["model"] for c in fake.call_args_list]
+
+    def test_each_agent_starts_on_its_own_model_with_rotated_chain(self, env):
+        env.setenv("LLM_PROVIDER", "gemini")
+        env.setenv("LLM_MODEL", "gemini-3.8-flash")       # must NOT override per-agent primaries
+        assert self._models(env, "architect") == [
+            "gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"]
+        assert self._models(env, "infra") == [
+            "gemini-3.6-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
+        assert self._models(env, "medic")[0] == "gemini-2.5-flash"
+        assert self._models(env, "supervisor")[0] == "gemini-3.5-flash-lite"
+
+    def test_agent_override_env(self, env):
+        env.setenv("LLM_PROVIDER", "gemini")
+        env.setenv("LLM_MODEL_INFRA", "gemini-2.5-flash")
+        assert self._models(env, "infra")[0] == "gemini-2.5-flash"
+
+    def test_openai_ignores_agent(self, env):
+        fake = MagicMock()
+        with patch("langchain_openai.ChatOpenAI", fake):
+            llm_factory.get_llm(agent="architect")
+        assert fake.call_args.kwargs["model"] == "gpt-4o"
+
+
+class TestDailyQuotaSkip:
+    _DAILY = ("429 RESOURCE_EXHAUSTED. Quota exceeded for metric: generate_content_free_tier_requests, "
+              "'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'retryDelay': '85579s'")
+    _MINUTE = ("429 RESOURCE_EXHAUSTED. 'quotaId': 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', "
+               "'retryDelay': '23s'")
+
+    def setup_method(self):
+        llm_factory._EXHAUSTED_MODELS.clear()
+
+    def teardown_method(self):
+        llm_factory._EXHAUSTED_MODELS.clear()
+
+    def test_daily_quota_marks_model_and_skips_it_next_time(self):
+        calls = []
+
+        def boom():
+            calls.append(1)
+            raise Exception(self._DAILY)
+
+        with pytest.raises(Exception, match="RESOURCE_EXHAUSTED"):
+            llm_factory._guarded_call("gemini-3.8-flash", boom)
+        assert "gemini-3.8-flash" in llm_factory._EXHAUSTED_MODELS
+        with pytest.raises(llm_factory.ModelQuotaExhausted):
+            llm_factory._guarded_call("gemini-3.8-flash", boom)
+        assert len(calls) == 1                     # second time: no network call at all
+
+    def test_per_minute_429_is_not_marked(self):
+        with pytest.raises(Exception):
+            llm_factory._guarded_call("gemini-3.6-flash", lambda: (_ for _ in ()).throw(Exception(self._MINUTE)))
+        assert "gemini-3.6-flash" not in llm_factory._EXHAUSTED_MODELS
+
+    def test_fallback_chain_moves_past_exhausted_model(self):
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+        from langchain_core.runnables import RunnableLambda
+
+        llm_factory._EXHAUSTED_MODELS.add("gemini-3.8-flash")
+        primary = RunnableLambda(lambda x: llm_factory._guarded_call("gemini-3.8-flash", lambda: "never"))
+        chain = primary.with_fallbacks([FakeListChatModel(responses=["from model 2"])])
+        assert chain.invoke("hi").content == "from model 2"

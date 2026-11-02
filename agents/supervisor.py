@@ -56,7 +56,7 @@ def supervisor_node(state: AgentState):
     """
     Main Orchestrator: Routes based on Unified State Statuses (Agnostic & Deterministic).
     """
-    llm = get_llm(temperature=TEMPERATURE)
+    llm = get_llm(temperature=TEMPERATURE, agent="supervisor")
 
     # 1. LOAD SYSTEM PROMPT
     try:

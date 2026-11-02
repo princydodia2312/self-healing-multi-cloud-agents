@@ -1,3 +1,4 @@
+import logging
 import os
 
 from utils.llm_defaults import default_agent_model, gemini_api_key
@@ -12,10 +13,17 @@ _PREFIX_TO_PROVIDER = {
     "gemini-": "gemini",
 }
 
-# Used when the primary Gemini model is overloaded (503), times out (504) or hits its per-model
-# free-tier quota (429). Each model has separate capacity AND a separate quota — the free tier
-# allows ~20 requests/day PER MODEL, so a chain of models multiplies the free daily budget.
-_DEFAULT_GEMINI_FALLBACK = "gemini-3.6-flash,gemini-2.5-flash,gemini-3.5-flash-lite"
+# Free-tier Gemini models used by the agents. The free tier allows ~20 requests/day PER MODEL, so
+# each agent starts on its OWN model (separate daily quota) and falls back through the others.
+_GEMINI_MODEL_POOL = ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite")
+_DEFAULT_AGENT_MODELS = {
+    "architect": "gemini-3.8-flash",       # writes the ETL script + DDL (hardest task)
+    "infra": "gemini-3.6-flash",           # writes the Terraform
+    "medic": "gemini-2.5-flash",           # diagnoses CI failures
+    "supervisor": "gemini-3.5-flash-lite",  # rare LLM fallback only
+}
+# Kept for backward compatibility (LLM_FALLBACK_MODEL default before per-agent models).
+_DEFAULT_GEMINI_FALLBACK = ",".join(_GEMINI_MODEL_POOL[1:])
 
 
 def _infer_provider(model: str) -> str:
@@ -61,22 +69,76 @@ def _with_user_turn(messages):
 
 _GEMINI_CHAT_CLS = None
 
+# ── Daily free-quota tracking ────────────────────────────────────────────────────────────────
+# Gemini's free tier caps requests PER DAY PER MODEL (quotaId ...PerDay...). Once a model hits it
+# the remaining ~24h of the run can never succeed on that model, so retrying it only burns time.
+# Models that report a DAILY quota error are remembered for this process and skipped instantly,
+# letting the fallback chain move straight to the next model. Per-minute 429s are NOT marked.
+_EXHAUSTED_MODELS: set[str] = set()
+
+
+class ModelQuotaExhausted(RuntimeError):
+    """Raised instead of calling a model whose daily free quota is already used up."""
+
+
+def _is_daily_quota_error(err: Exception) -> bool:
+    import re as _re
+
+    text = str(err)
+    if "RESOURCE_EXHAUSTED" not in text and "429" not in text:
+        return False
+    if "PerDay" in text or "per day" in text.lower():
+        return True
+    m = _re.search(r"retryDelay'?\"?:\s*'?\"?(\d+)s", text)
+    return bool(m and int(m.group(1)) > 3600)
+
+
+def _guarded_call(model: str, fn):
+    if model in _EXHAUSTED_MODELS:
+        raise ModelQuotaExhausted(
+            f"{model}: daily free quota exhausted (skipped). If every model is exhausted, wait for the "
+            f"reset (midnight Pacific) and use './run_project.sh <pipeline> --resume', or use another key.")
+    try:
+        return fn()
+    except Exception as e:
+        if _is_daily_quota_error(e):
+            _EXHAUSTED_MODELS.add(model)
+            logging.getLogger("LLM").warning(
+                f"⛔ {model} daily free quota exhausted — skipping it for this run.")
+        raise
+
 
 def _gemini_chat_cls():
-    """ChatGoogleGenerativeAI with the `_with_user_turn` guard (built lazily: optional dependency)."""
+    """ChatGoogleGenerativeAI with the `_with_user_turn` guard and daily-quota skipping
+    (built lazily: optional dependency)."""
     global _GEMINI_CHAT_CLS
     if _GEMINI_CHAT_CLS is None:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         class SafeGeminiChat(ChatGoogleGenerativeAI):
             def _generate(self, messages, *args, **kwargs):
-                return super()._generate(_with_user_turn(messages), *args, **kwargs)
+                return _guarded_call(self.model, lambda: super(SafeGeminiChat, self)._generate(
+                    _with_user_turn(messages), *args, **kwargs))
 
             async def _agenerate(self, messages, *args, **kwargs):
-                return await super()._agenerate(_with_user_turn(messages), *args, **kwargs)
+                if self.model in _EXHAUSTED_MODELS:
+                    _guarded_call(self.model, lambda: None)   # raises ModelQuotaExhausted
+                try:
+                    return await super()._agenerate(_with_user_turn(messages), *args, **kwargs)
+                except Exception as e:
+                    if _is_daily_quota_error(e):
+                        _EXHAUSTED_MODELS.add(self.model)
+                    raise
 
             def _stream(self, messages, *args, **kwargs):
-                yield from super()._stream(_with_user_turn(messages), *args, **kwargs)
+                if self.model in _EXHAUSTED_MODELS:
+                    _guarded_call(self.model, lambda: None)   # raises ModelQuotaExhausted
+                try:
+                    yield from super()._stream(_with_user_turn(messages), *args, **kwargs)
+                except Exception as e:
+                    if _is_daily_quota_error(e):
+                        _EXHAUSTED_MODELS.add(self.model)
+                    raise
 
         _GEMINI_CHAT_CLS = SafeGeminiChat
     return _GEMINI_CHAT_CLS
@@ -99,7 +161,13 @@ def _gemini_model(model: str, temperature: float, timeout: float, max_retries: i
     )
 
 
-def get_llm(temperature=0):
+def get_llm(temperature=0, agent: str | None = None):
+    """Chat model for an agent ("supervisor" | "architect" | "infra" | "medic").
+
+    Gemini: each agent gets its OWN primary model (separate free-tier daily quota) — override with
+    LLM_MODEL_<AGENT>; LLM_MODEL applies only to calls without an agent. The fallback chain is the
+    rest of the model pool (or LLM_FALLBACK_MODEL). Other providers ignore `agent` and use LLM_MODEL.
+    """
     # `or <default>` (not getenv's default arg) so a set-but-EMPTY env var — e.g. an unset GitHub
     # Actions `vars.LLM_MODEL` that expands to "" — falls back instead of yielding "" → _infer_provider("")
     # raising, or int("") crashing.
@@ -120,16 +188,30 @@ def get_llm(temperature=0):
         )
 
     if provider == "gemini":
-        raw = (os.getenv("LLM_FALLBACK_MODEL") or _DEFAULT_GEMINI_FALLBACK).strip()
-        fallbacks = [] if raw.lower() in ("", "none", "off") else [
-            m.strip() for m in raw.split(",") if m.strip() and m.strip() != model]
+        primary = model
+        if agent:
+            # Per-agent primary model → each agent drains its OWN daily quota first.
+            primary = (os.getenv(f"LLM_MODEL_{agent.upper()}") or "").strip() or \
+                _DEFAULT_AGENT_MODELS.get(agent, model)
+        raw = (os.getenv("LLM_FALLBACK_MODEL") or "").strip()
+        if raw.lower() in ("none", "off"):
+            fallbacks = []
+        elif raw:
+            fallbacks = [m.strip() for m in raw.split(",") if m.strip() and m.strip() != primary]
+        else:
+            # Rotate the 4-model pool so the chain starts after this agent's primary.
+            pool = list(_GEMINI_MODEL_POOL)
+            if primary in pool:
+                i = pool.index(primary)
+                pool = pool[i + 1:] + pool[:i]
+            fallbacks = [m for m in pool if m != primary]
         # With fallback models available, give up on an overloaded/exhausted model sooner and switch.
         retries = int(os.getenv("LLM_MAX_RETRIES") or ("2" if fallbacks else "6"))
-        primary = _gemini_model(model, temperature, timeout, retries)
+        primary_llm = _gemini_model(primary, temperature, timeout, retries)
         if not fallbacks:
-            return primary
+            return primary_llm
         # RunnableWithFallbacks forwards bind_tools(...) to the primary AND every fallback.
-        return primary.with_fallbacks([_gemini_model(m, temperature, timeout, retries) for m in fallbacks])
+        return primary_llm.with_fallbacks([_gemini_model(m, temperature, timeout, retries) for m in fallbacks])
 
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic

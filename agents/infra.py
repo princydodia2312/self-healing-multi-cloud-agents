@@ -184,7 +184,7 @@ def infra_node(state: AgentState, config: RunnableConfig = None):
     and nest under this node's run — verified for both graph.invoke and graph.stream.
     """
     logger.info("--- STARTING INFRASTRUCTURE NODE ---")
-    llm = get_llm(temperature=TEMPERATURE)
+    llm = get_llm(temperature=TEMPERATURE, agent="infra")
 
     # 1. LOCAL STATE EXTRACTION
     written_files = state.get("written_files", [])
