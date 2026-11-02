@@ -133,8 +133,10 @@ show_results() {
   step "Results"
   check_aws
   echo "── S3 data lake (Parquet, partitioned by run_date)"
-  aws s3 ls "s3://$EU_BUCKET/processed/" --recursive --human-readable | grep parquet || echo "  (no eu_sales files yet)"
-  aws s3 ls "s3://$SHOP_BUCKET/processed/" --recursive --human-readable | grep parquet || echo "  (no shop_orders files yet)"
+  echo "  eu_sales     (s3://$EU_BUCKET):"
+  aws s3 ls "s3://$EU_BUCKET/processed/" --recursive --human-readable | grep parquet | sed 's/^/    /' || echo "    (no files yet)"
+  echo "  shop_orders  (s3://$SHOP_BUCKET):"
+  aws s3 ls "s3://$SHOP_BUCKET/processed/" --recursive --human-readable | grep parquet | sed 's/^/    /' || echo "    (no files yet)"
 
   echo; echo "── Kubernetes"
   kubectl get pods -n analytics --no-headers 2>/dev/null | awk '{print "  analytics:  "$1"  "$3}'

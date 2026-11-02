@@ -190,6 +190,18 @@ make bootstrap-aws        # one-time: EKS + RDS + ECR + S3 state + SSM (exports 
 make demo                 # ingest standards → seed 100 dirty rows → run the eu_sales pipeline
 ```
 
+**One command for everything** — [`run_project.sh`](run_project.sh) (Ubuntu/WSL):
+
+```bash
+./run_project.sh            # menu
+./run_project.sh demo       # start AWS + show S3 / Trino / Grafana results (no new agent run)
+./run_project.sh full       # run both pipelines end to end, then show results
+./run_project.sh eu_sales   # or shop_orders; add --fresh to rewrite today's partition
+./run_project.sh ui         # Streamlit with a live Trino connection
+./run_project.sh check      # tests + self-heal eval + security gate (offline, free)
+./run_project.sh pause      # stop the database between sessions
+```
+
 Or run each step yourself:
 
 ```bash
