@@ -1,13 +1,13 @@
-import os
-import time
 import datetime
 import logging
+import os
+import time
 from urllib.parse import urlparse
 
 import pandas as pd
+from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
 from sqlalchemy import create_engine
 from trino.dbapi import connect as trino_connect
-from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
 
 from utils.cloud_config import cloud_get
 
@@ -56,31 +56,31 @@ def run():
 
     # ── 2. CREDENTIALS via cloud_get() ───────────────────────────────────────
     if _CLOUD == "aws":
-        host = cloud_get("aws", "db_host",     db_type="postgres")
-        port = cloud_get("aws", "db_port",     db_type="postgres") or "5432"
-        user = cloud_get("aws", "db_user",     db_type="postgres")
-        pw   = cloud_get("aws", "db_password", db_type="postgres")
-        db   = cloud_get("aws", "db_name",     db_type="postgres")
+        host = cloud_get("aws", "db_host", db_type="postgres")
+        port = cloud_get("aws", "db_port", db_type="postgres") or "5432"
+        user = cloud_get("aws", "db_user", db_type="postgres")
+        pw = cloud_get("aws", "db_password", db_type="postgres")
+        db = cloud_get("aws", "db_name", db_type="postgres")
         connection_string = (
             f"postgresql+psycopg2://{user}:{pw}"
             f"@{host}:{port}/{db}"
         )
     elif _CLOUD == "gcp":
-        host = cloud_get("gcp", "db_host",     db_type="mysql")
-        port = cloud_get("gcp", "db_port",     db_type="mysql") or "3306"
-        user = cloud_get("gcp", "db_user",     db_type="mysql")
-        pw   = cloud_get("gcp", "db_password", db_type="mysql")
-        db   = cloud_get("gcp", "db_name",     db_type="mysql")
+        host = cloud_get("gcp", "db_host", db_type="mysql")
+        port = cloud_get("gcp", "db_port", db_type="mysql") or "3306"
+        user = cloud_get("gcp", "db_user", db_type="mysql")
+        pw = cloud_get("gcp", "db_password", db_type="mysql")
+        db = cloud_get("gcp", "db_name", db_type="mysql")
         connection_string = f"mysql+pymysql://{user}:{pw}@{host}:{port}/{db}"
     elif _CLOUD == "azure":
-        host = cloud_get("azure", "db_host",     db_type="postgres")
-        port = cloud_get("azure", "db_port",     db_type="postgres") or "5432"
-        user = cloud_get("azure", "db_user",     db_type="postgres")
-        pw   = cloud_get("azure", "db_password", db_type="postgres")
-        db   = cloud_get("azure", "db_name",     db_type="postgres")
+        host = cloud_get("azure", "db_host", db_type="postgres")
+        port = cloud_get("azure", "db_port", db_type="postgres") or "5432"
+        user = cloud_get("azure", "db_user", db_type="postgres")
+        pw = cloud_get("azure", "db_password", db_type="postgres")
+        db = cloud_get("azure", "db_name", db_type="postgres")
         connection_string = f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{db}"
 
-    # ── 3. EXTRACTION + TRANSFORMATION + WRITE (one try block) ───────────────
+    # ── 3. EXTRACTION + TRANSFORMATION + WRITE ───────────────────────────────
     start_time = time.time()
     total_rows = 0
     rejected_by_reason = {}
@@ -89,57 +89,61 @@ def run():
     try:
         engine = create_engine(connection_string)
         for i, chunk in enumerate(pd.read_sql_query(query, engine, chunksize=1000)):
+            # 3a. Business Rules & Quality Transformations
 
-            # 3a. Date conversion
-            chunk['order_date'] = pd.to_datetime(chunk['order_date'], errors='coerce')
-
-            # 3b. Business rules
-            # monetary_integrity
+            # monetary_integrity: unit_price > 0.0 (DROP_RECORD)
             chunk['unit_price'] = pd.to_numeric(chunk['unit_price'], errors='coerce')
             _before = len(chunk)
             chunk = chunk[chunk['unit_price'] > 0.0]
-            rejected_by_reason['monetary_integrity'] = \
+            rejected_by_reason['monetary_integrity'] = (
                 rejected_by_reason.get('monetary_integrity', 0) + (_before - len(chunk))
+            )
 
-            # temporal_validity
+            # temporal_validity: order_date <= current timestamp (EXCLUDE_AND_LOG)
+            chunk['order_date'] = pd.to_datetime(chunk['order_date'], errors='coerce')
             _before = len(chunk)
             _future = chunk['order_date'] > pd.Timestamp.now()
             if _future.any():
-                logging.warning(f"Excluded {_future.sum()} rows: temporal_validity.")
+                logging.warning(f"Excluded {_future.sum()} future-dated rows (temporal_validity).")
             chunk = chunk[~_future]
-            rejected_by_reason['temporal_validity'] = \
+            rejected_by_reason['temporal_validity'] = (
                 rejected_by_reason.get('temporal_validity', 0) + (_before - len(chunk))
+            )
 
-            # completeness_enforcement
+            # completeness_enforcement: order_id not NULL or empty (DROP_RECORD)
             _before = len(chunk)
-            chunk = chunk.dropna(subset=['order_id'])
-            chunk = chunk[chunk['order_id'].astype(str).str.strip() != '']
-            rejected_by_reason['completeness_enforcement'] = \
+            chunk = chunk[chunk['order_id'].notna() & (chunk['order_id'].astype(str).str.strip() != '')]
+            rejected_by_reason['completeness_enforcement'] = (
                 rejected_by_reason.get('completeness_enforcement', 0) + (_before - len(chunk))
+            )
 
-            # currency_standardization
+            # currency_standardization: currency in ['EUR', 'GBP'] (DROP_RECORD)
             _before = len(chunk)
             chunk = chunk[chunk['currency'].isin(['EUR', 'GBP'])]
-            rejected_by_reason['currency_standardization'] = \
+            rejected_by_reason['currency_standardization'] = (
                 rejected_by_reason.get('currency_standardization', 0) + (_before - len(chunk))
+            )
 
-            # quantity_validity
+            # quantity_validity: quantity > 0 (DROP_RECORD)
             chunk['quantity'] = pd.to_numeric(chunk['quantity'], errors='coerce')
             _before = len(chunk)
             chunk = chunk[chunk['quantity'] > 0]
-            rejected_by_reason['quantity_validity'] = \
+            rejected_by_reason['quantity_validity'] = (
                 rejected_by_reason.get('quantity_validity', 0) + (_before - len(chunk))
+            )
 
-            # volume_sanity_check
-            chunk['is_suspicious'] = (chunk['quantity'] >= 5)
+            # volume_sanity_check: quantity < 5 per line item (FLAG_AS_SUSPICIOUS)
+            chunk['is_suspicious'] = chunk['quantity'] >= 5
 
-            # 3c. Type casting — cast float64 → Int64 for integer/count/quantity columns
-            int_cols = [c for c in chunk.select_dtypes(include='float64').columns
-                        if any(kw in c.lower() for kw in ['quantity', 'qty', 'count', 'units'])]
+            # 3c. Type casting — cast float64 -> Int64 for quantity/count columns
+            int_cols = [
+                c for c in chunk.select_dtypes(include='float64').columns
+                if any(kw in c.lower() for kw in ['quantity', 'qty', 'count', 'units'])
+            ]
             for col in int_cols:
                 chunk[col] = chunk[col].astype('Int64')
 
-            # 3d. Write
+            # 3d. Write Parquet
             chunk.to_parquet(
                 f"{partition_uri}part_{i}.parquet",
                 engine="pyarrow",
@@ -177,7 +181,7 @@ def run():
 
     # ── 5. METRICS EMISSION ───────────────────────────────────────────────────
     pushgateway_url = os.getenv("PUSHGATEWAY_URL", "http://pushgateway.monitoring.svc.cluster.local:9091")
-    project_id     = os.getenv("PROJECT_ID", "unknown")
+    project_id = os.getenv("PROJECT_ID", "unknown")
     cloud_provider = os.getenv("CLOUD_PROVIDER", "unknown")
 
     registry = CollectorRegistry()
