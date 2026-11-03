@@ -289,3 +289,27 @@ class TestMedicFastPath:
         later = [HumanMessage(content=f"step {i}") for i in range(10)]
         _, invoke = self._run(_medic_state([old] + later))
         assert invoke.called
+
+
+
+class TestTerraformProgress:
+    def _prompt(self, llm):
+        msgs = llm.bind_tools.return_value.invoke.call_args.args[0]
+        return msgs[0]["content"]
+
+    def test_prompt_lists_only_the_missing_tf_files(self):
+        llm = _llm_returning(AIMessage(content="ok"))
+        with patch.object(infra, "get_llm", return_value=llm):
+            infra.infra_node(_infra_state(written_files=["terraform/providers.tf", "terraform/variables.tf"]))
+        p = self._prompt(llm)
+        assert "STILL MISSING: terraform/main.tf, terraform/outputs.tf, terraform/terraform.tfvars" in p
+        assert "ALREADY WRITTEN (do NOT write these again): terraform/providers.tf, terraform/variables.tf" in p
+
+    def test_repeated_rewrites_stop_the_run_without_an_llm_call(self):
+        llm = _llm_returning()
+        skips = [ToolMessage(tool_call_id=f"s{i}", content="Skipped: 'terraform/providers.tf' already exists "
+                             "and is not the fix target.") for i in range(6)]
+        with patch.object(infra, "get_llm", return_value=llm):
+            out = infra.infra_node(_infra_state(messages=skips, written_files=["terraform/providers.tf"]))
+        llm.bind_tools.return_value.invoke.assert_not_called()
+        assert out["mission_status"] == "escalated" and out["fix_loop_escalated"] is True

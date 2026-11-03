@@ -55,9 +55,10 @@ class TestGetLlmGemini:
             llm = llm_factory.get_llm(temperature=0)
         primary, *fallbacks = (c.kwargs for c in fake.call_args_list)
         assert primary["model"] == "gemini-3.8-flash"
-        assert [f["model"] for f in fallbacks] == ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"]
+        assert [f["model"] for f in fallbacks] == ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash",
+                                                   "gemini-2.5-flash", "gemini-3.5-flash-lite"]
         assert primary["google_api_key"] == "g-key"
-        assert primary["max_retries"] == 2           # give up sooner on an overloaded primary...
+        assert primary["max_retries"] == 1           # switch sooner from an overloaded primary...
         assert "temperature" not in primary          # Gemini 3+: keep Google's default sampling
         fake.return_value.with_fallbacks.assert_called_once()   # ...and switch to the fallback
         assert llm is fake.return_value.with_fallbacks.return_value
@@ -188,11 +189,21 @@ class TestPerAgentModels:
         env.setenv("LLM_PROVIDER", "gemini")
         env.setenv("LLM_MODEL", "gemini-3.8-flash")       # must NOT override per-agent primaries
         assert self._models(env, "architect") == [
-            "gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"]
+            "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash",
+            "gemini-2.5-flash", "gemini-3.5-flash-lite"]
         assert self._models(env, "infra") == [
-            "gemini-3.6-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
-        assert self._models(env, "medic")[0] == "gemini-2.5-flash"
+            "gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.8-flash",
+            "gemini-3.7-flash", "gemini-3.5-flash-lite"]               # lite always last
+        assert self._models(env, "medic")[0] == "gemini-3.7-flash"
         assert self._models(env, "supervisor")[0] == "gemini-3.5-flash-lite"
+
+    def test_404_model_is_skipped_for_the_run(self):
+        llm_factory._EXHAUSTED_MODELS.clear()
+        err = Exception("404 NOT_FOUND. {'error': {'code': 404, 'status': 'NOT_FOUND'}}")
+        with pytest.raises(Exception):
+            llm_factory._guarded_call("gemini-2.5-flash", lambda: (_ for _ in ()).throw(err))
+        assert "gemini-2.5-flash" in llm_factory._EXHAUSTED_MODELS
+        llm_factory._EXHAUSTED_MODELS.clear()
 
     def test_agent_override_env(self, env):
         env.setenv("LLM_PROVIDER", "gemini")

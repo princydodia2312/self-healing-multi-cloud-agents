@@ -14,12 +14,15 @@ _PREFIX_TO_PROVIDER = {
 }
 
 # Free-tier Gemini models used by the agents. The free tier allows ~20 requests/day PER MODEL, so
-# each agent starts on its OWN model (separate daily quota) and falls back through the others.
-_GEMINI_MODEL_POOL = ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite")
+# each agent starts on its OWN model (separate daily quota) and falls back through the others —
+# the stronger "flash" models first, the weaker "flash-lite" LAST (it writes one file per turn and
+# strays outside its task, which costs more calls than it saves).
+_GEMINI_MODEL_POOL = ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash",
+                      "gemini-2.5-flash", "gemini-3.5-flash-lite")
 _DEFAULT_AGENT_MODELS = {
     "architect": "gemini-3.8-flash",       # writes the ETL script + DDL (hardest task)
     "infra": "gemini-3.6-flash",           # writes the Terraform
-    "medic": "gemini-2.5-flash",           # diagnoses CI failures
+    "medic": "gemini-3.7-flash",           # diagnoses CI failures
     "supervisor": "gemini-3.5-flash-lite",  # rare LLM fallback only
 }
 # Kept for backward compatibility (LLM_FALLBACK_MODEL default before per-agent models).
@@ -90,6 +93,10 @@ def _is_daily_quota_error(err: Exception) -> bool:
     import re as _re
 
     text = str(err)
+    # A model the key cannot use (404 NOT_FOUND) will not start working mid-run either —
+    # skip it like an exhausted one instead of paying a failed round trip on every call.
+    if "404" in text and "NOT_FOUND" in text.upper().replace(" ", "_"):
+        return True
     if "RESOURCE_EXHAUSTED" not in text and "429" not in text:
         return False
     if "PerDay" in text or "per day" in text.lower():
@@ -204,14 +211,16 @@ def get_llm(temperature=0, agent: str | None = None):
         elif raw:
             fallbacks = [m.strip() for m in raw.split(",") if m.strip() and m.strip() != primary]
         else:
-            # Rotate the 4-model pool so the chain starts after this agent's primary.
+            # Rotate the pool so the chain starts after this agent's primary; flash-lite goes last.
             pool = list(_GEMINI_MODEL_POOL)
             if primary in pool:
                 i = pool.index(primary)
                 pool = pool[i + 1:] + pool[:i]
-            fallbacks = [m for m in pool if m != primary]
-        # With fallback models available, give up on an overloaded/exhausted model sooner and switch.
-        retries = int(os.getenv("LLM_MAX_RETRIES") or ("2" if fallbacks else "6"))
+            fallbacks = [m for m in pool if m != primary and "lite" not in m] + \
+                        [m for m in pool if m != primary and "lite" in m]
+        # With fallback models available, switch to the next model after ONE retry: a busy (503)
+        # model is better replaced than hammered, and every retry is one more request.
+        retries = int(os.getenv("LLM_MAX_RETRIES") or ("1" if fallbacks else "6"))
         primary_llm = _gemini_model(primary, temperature, timeout, retries)
         if not fallbacks:
             return primary_llm

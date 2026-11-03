@@ -123,9 +123,9 @@ function that calls the LLM and tools. *Alternatives:* CrewAI, AutoGen, a hand-w
 
 **Gemini / OpenAI (LLM)** — *What:* large language models used through an API. *Problem:*
 generating code and diagnosing errors needs judgement. *Why Gemini:* free tier for a student
-project; OpenAI kept as a switch. *Where:* `agents/llm_factory.py::get_llm()`; Gemini falls back
-through `gemini-3.6-flash, gemini-2.5-flash, gemini-3.5-flash-lite` because the free tier allows
-~20 requests/day per model. *Alternatives:* Claude (also supported in code), local models.
+project; OpenAI kept as a switch. *Where:* `agents/llm_factory.py::get_llm()`; each agent starts on its
+own Gemini model and falls back through the other free models (`flash-lite` last) because the free
+tier allows ~20 requests/day per model. *Alternatives:* Claude (also supported in code), local models.
 
 **Pinecone (vector database) + RAG** — *What:* stores text as vectors (embeddings) so you can
 search by meaning. *Problem:* the LLM must follow *our* engineering rules, not invent its own.

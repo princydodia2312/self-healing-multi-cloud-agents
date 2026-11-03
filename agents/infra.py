@@ -370,6 +370,39 @@ def infra_node(state: AgentState, config: RunnableConfig = None):
                 # First run: the LLM writes the .tf files; Python then runs init/plan/apply
                 # (see "DETERMINISTIC TERRAFORM" after the tool loop) — no LLM execute call.
                 selected_keys = ["write_terraform_config"]
+                # Tell the LLM EXACTLY which files are still missing. Without this, a model that
+                # writes one file per turn (and only sees the last 5 messages) kept re-writing
+                # files that already existed ("Skipping existing terraform file") — every visit
+                # one wasted LLM call, until the daily quota was gone.
+                _tf_missing = [f for f in tf_required if not files_exist_in_state([f], written_files)]
+                _tf_done_list = [f for f in tf_required if f not in _tf_missing]
+                orchestration_phase_instruction = (
+                    "CURRENT OPERATIONAL PHASE: TERRAFORM FILES.\n"
+                    f"STILL MISSING: {', '.join(_tf_missing)}.\n"
+                    + (f"ALREADY WRITTEN (do NOT write these again): {', '.join(_tf_done_list)}.\n"
+                       if _tf_done_list else "")
+                    + "Write ALL missing files in THIS response — one write_terraform_config call per "
+                    "missing file, all in the same turn. Python runs terraform afterwards."
+                )
+                # Backstop: a model that keeps re-writing existing files makes no progress. Stop
+                # the run cleanly instead of burning the daily quota.
+                _skips = sum(
+                    1 for m in state["messages"]
+                    if isinstance(m, ToolMessage) and str(m.content).startswith("Skipped: 'terraform/")
+                )
+                if _skips >= 6:
+                    logger.error(f"🛑 Terraform phase not progressing ({_skips} rewrites of existing files).")
+                    return {
+                        "messages": [HumanMessage(content=(
+                            "Infra stopped: the model kept re-writing Terraform files that already exist "
+                            f"instead of the missing ones ({', '.join(_tf_missing)}). Stopped to save LLM "
+                            "quota — re-run the pipeline (with --resume from the CLI)."))],
+                        "next_step": "supervisor",
+                        "last_agent": "infra",
+                        "fix_loop_escalated": True,
+                        "mission_status": "escalated",
+                        "healing_context": "",
+                    }
             elif medic_triggered_fix:
                 # Fix mode: files exist but execute failed. Allow targeted rewrite (dedup
                 # in the execution loop gates which files can actually be overwritten based
