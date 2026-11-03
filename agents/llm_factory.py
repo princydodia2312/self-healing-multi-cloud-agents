@@ -64,6 +64,11 @@ def _with_user_turn(messages):
         prev = m
     if prev is None:
         out.append(HumanMessage(content="Begin. Follow the instructions above."))
+    elif isinstance(prev, AIMessage) and not prev.tool_calls:
+        # Gemini 3.x rejects "model prefilling": the final turn must be a user message or a
+        # function response. A history ending on a model turn (e.g. an agent re-entered after
+        # another agent's plain-text reply) gets a minimal user turn appended.
+        out.append(HumanMessage(content="Continue with the task."))
     return out
 
 

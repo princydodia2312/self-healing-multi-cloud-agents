@@ -175,6 +175,33 @@ def _latest_autovalidation_failure(messages: list) -> str:
     return latest
 
 
+_DB_CONNECT_MARKERS = (
+    "is the server running on that host",
+    "timeout expired",
+    "connection refused",
+    "could not connect to server",
+    "connection timed out",
+    "serverselectiontimeouterror",
+    "no route to host",
+)
+
+_DB_UNREACHABLE_MSG = (
+    "The source database could not be reached, so the schema could not be read. This is a "
+    "network/firewall problem, NOT a code bug — no file was changed. Check:\n"
+    "  • Is AWS running? Start it with `./run_project.sh demo` (RDS may be paused).\n"
+    "  • Is your internet IP allowed? Your IP changes when you switch network. Add it to "
+    "TF_VAR_rds_allowed_cidrs in .env and run `terraform -chdir=bootstrap/aws apply` "
+    "(MongoDB Atlas: add the IP under Network Access).\n"
+    "Then run the pipeline again."
+)
+
+
+def _source_db_unreachable(blob: str) -> bool:
+    """True when the newest messages show a connection failure while reading the source DB."""
+    low = blob.lower()
+    return "database error on" in low and any(m in low for m in _DB_CONNECT_MARKERS)
+
+
 def _recent_local_validation_failure(messages: list, window: int = 8) -> tuple[str, str]:
     """(file, verbatim validator output) of the newest AUTO-VALIDATION failure in the last `window`
     messages, or ("", ""). Only the most recent agent turn matters — an older failure that a later
@@ -543,6 +570,23 @@ def medic_node(state: AgentState):
     # short-circuit BEFORE the LLM runs: surface actionable guidance and FINISH (via
     # fix_loop_escalated, which the Supervisor routes to FINISH).
     _recent_blob = " ".join(str(getattr(m, "content", "")) for m in state["messages"][-8:])
+
+    # 2a. SOURCE-DATABASE UNREACHABLE GUARD — operational, not a code bug. A network/firewall
+    # problem (RDS stopped, laptop IP outside the security group, Atlas IP list) cannot be fixed
+    # by patching any file; routing it to an agent only burns LLM calls on doomed "fixes".
+    if _source_db_unreachable(_recent_blob):
+        logger.warning("Source database unreachable — operational, surfacing to user (no fix loop).")
+        return {
+            "messages": [HumanMessage(content=_DB_UNREACHABLE_MSG)],
+            "next_step": "supervisor",
+            "last_agent": "medic",
+            "healing_context": "",
+            "fix_loop_escalated": True,
+            "mission_status": "escalated",
+            "fix_attempt": 0,
+            "last_fix_signature": "",
+            "medic_fix_target": "",
+        }
     if "STATE_LOCK_ERROR" in _recent_blob:
         logger.warning("Terraform STATE_LOCK_ERROR detected — operational, surfacing to user (no fix loop).")
         _lock_msg = (

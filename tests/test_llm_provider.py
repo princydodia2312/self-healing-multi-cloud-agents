@@ -245,3 +245,34 @@ class TestDailyQuotaSkip:
         primary = RunnableLambda(lambda x: llm_factory._guarded_call("gemini-3.8-flash", lambda: "never"))
         chain = primary.with_fallbacks([FakeListChatModel(responses=["from model 2"])])
         assert chain.invoke("hi").content == "from model 2"
+
+
+class TestNoModelPrefill:
+    def test_history_ending_on_model_text_gets_a_user_turn(self):
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+        msgs = [SystemMessage(content="s"), HumanMessage(content="u"), AIMessage(content="done")]
+        out = llm_factory._with_user_turn(msgs)
+        assert isinstance(out[-1], HumanMessage) and out[:3] == msgs
+
+
+class TestDbUnreachableGuard:
+    def test_connection_failure_escalates_without_llm(self):
+        from agents import medic
+        from langchain_core.messages import HumanMessage
+        st = {"messages": [HumanMessage(content=(
+                  "SCHEMA DISCOVERY FAILED (read_data_schema table_name='raw_eu_sales', db_type='postgres'): "
+                  "Database Error on postgres: (psycopg2.OperationalError) connection to server at \"x\" "
+                  "failed: Connection timed out\n\tIs the server running on that host and accepting TCP/IP "
+                  "connections? [OperationalError]"))],
+              "infra_status": "pending", "project_id": "P"}
+        llm = MagicMock()
+        with patch.object(medic, "get_llm", return_value=llm):
+            out = medic.medic_node(st)
+        llm.bind_tools.return_value.invoke.assert_not_called()
+        assert out["mission_status"] == "escalated" and out["fix_loop_escalated"] is True
+        assert "TF_VAR_rds_allowed_cidrs" in out["messages"][0].content
+
+    def test_sql_error_is_not_treated_as_network(self):
+        from agents.medic import _source_db_unreachable
+        assert not _source_db_unreachable(
+            "Database Error on postgres: relation \"raw_x\" does not exist [ProgrammingError]")
