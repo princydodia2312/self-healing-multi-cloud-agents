@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from langchain_core.tools import tool
+from pydantic import BaseModel, Field, model_validator
 import json
 import subprocess
 from pathlib import Path
@@ -1706,8 +1707,50 @@ def write_project_file(filename: str, content: str):
     except Exception as e:
         return f"Error writing file: {str(e)}"
 
+class Replacement(BaseModel):
+    """One find-and-replace edit for patch_project_file."""
+    old: str = Field(description="Exact text to find (must be unique in the file), or __ADD_IMPORT__")
+    new: str = Field(description="Text to replace it with")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_json_string(cls, v):
+        # Some providers send each edit as a JSON string instead of an object.
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                return {"old": "", "new": ""}
+        return v
+
+
+def _normalize_replacements(replacements) -> list[dict]:
+    """Accept the edit list in every shape a provider may send: dicts, pydantic objects, or
+    JSON strings. (An untyped `list` made Gemini's schema "array of STRING", so Gemini sent
+    strings and every patch crashed with "'str' object has no attribute 'get'".)"""
+    if isinstance(replacements, str):
+        try:
+            replacements = json.loads(replacements)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(replacements, dict):
+        replacements = [replacements]
+    out = []
+    for rep in replacements or []:
+        if hasattr(rep, "model_dump"):
+            rep = rep.model_dump()
+        elif isinstance(rep, str):
+            try:
+                rep = json.loads(rep)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(rep, dict):
+            out.append({"old": str(rep.get("old", "")), "new": str(rep.get("new", ""))})
+    return out
+
+
 @tool
-def patch_project_file(filename: str, replacements: list) -> str:
+def patch_project_file(filename: str, replacements: list[Replacement]) -> str:
     """
     Applies targeted find-and-replace edits to an existing file WITHOUT rewriting it.
     Use this in fix mode to apply surgical changes (e.g. os.getenv → cloud_get)
@@ -1749,6 +1792,7 @@ def patch_project_file(filename: str, replacements: list) -> str:
 
     original_content = content  # snapshot for the syntax-safety rollback below
 
+    replacements = _normalize_replacements(replacements)
     if not replacements:
         return (
             "Error: replacements list is empty — patch_project_file requires at least one replacement. "
