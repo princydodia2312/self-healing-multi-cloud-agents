@@ -1,6 +1,6 @@
 {
-  "uid": "shop-orders-data-observability",
-  "title": "Shop Orders Data Observability",
+  "uid": "eu-sales-data-observability",
+  "title": "EU Sales Data Observability",
   "schemaVersion": 37,
   "version": 1,
   "refresh": "5m",
@@ -10,7 +10,7 @@
   },
   "tags": [
     "data-pipeline",
-    "shop-orders",
+    "eu-sales",
     "aws"
   ],
   "templating": {

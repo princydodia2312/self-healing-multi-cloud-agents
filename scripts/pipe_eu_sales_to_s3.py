@@ -93,14 +93,14 @@ def run():
             chunk['order_date'] = pd.to_datetime(chunk['order_date'], errors='coerce')
 
             # 3b. Business rules
-            # monetary_integrity: unit_price > 0.0
+            # monetary_integrity: unit_price > 0.0 (DROP_RECORD)
             chunk['unit_price'] = pd.to_numeric(chunk['unit_price'], errors='coerce')
             _before = len(chunk)
             chunk = chunk[chunk['unit_price'] > 0.0]
             rejected_by_reason['monetary_integrity'] = \
                 rejected_by_reason.get('monetary_integrity', 0) + (_before - len(chunk))
 
-            # temporal_validity: order_date <= current timestamp
+            # temporal_validity: order_date <= current timestamp (EXCLUDE_AND_LOG)
             _before = len(chunk)
             _future = chunk['order_date'] > pd.Timestamp.now()
             if _future.any():
@@ -109,20 +109,30 @@ def run():
             rejected_by_reason['temporal_validity'] = \
                 rejected_by_reason.get('temporal_validity', 0) + (_before - len(chunk))
 
-            # completeness_enforcement: order_id not null/empty
+            # completeness_enforcement: order_id not null or empty (DROP_RECORD)
             _before = len(chunk)
-            chunk = chunk[chunk['order_id'].notna() & (chunk['order_id'].astype(str).str.strip() != '')]
+            chunk = chunk.dropna(subset=['order_id'])
+            chunk = chunk[chunk['order_id'].astype(str).str.strip() != '']
             rejected_by_reason['completeness_enforcement'] = \
                 rejected_by_reason.get('completeness_enforcement', 0) + (_before - len(chunk))
 
-            # currency_standardization: currency in ['EUR', 'GBP'], default 'EUR'
-            chunk['currency'] = chunk['currency'].where(chunk['currency'].isin(['EUR', 'GBP']), other='EUR')
+            # currency_standardization: currency in ['EUR', 'GBP'] (DROP_RECORD)
+            _before = len(chunk)
+            chunk = chunk[chunk['currency'].isin(['EUR', 'GBP'])]
+            rejected_by_reason['currency_standardization'] = \
+                rejected_by_reason.get('currency_standardization', 0) + (_before - len(chunk))
 
-            # volume_sanity_check & quantity_validity: quantity < 1000 and quantity > 0
+            # quantity_validity: quantity > 0 (DROP_RECORD)
             chunk['quantity'] = pd.to_numeric(chunk['quantity'], errors='coerce')
-            chunk['is_suspicious'] = chunk['quantity'].isna() | (chunk['quantity'] >= 1000) | (chunk['quantity'] <= 0)
+            _before = len(chunk)
+            chunk = chunk[chunk['quantity'] > 0]
+            rejected_by_reason['quantity_validity'] = \
+                rejected_by_reason.get('quantity_validity', 0) + (_before - len(chunk))
 
-            # 3c. Type casting — cast float64 → Int64 for integer/count/quantity columns
+            # volume_sanity_check: quantity < 5 (FLAG_AS_SUSPICIOUS)
+            chunk['is_suspicious'] = chunk['quantity'] >= 5
+
+            # 3c. Type casting — cast float64 -> Int64 for quantity/count columns
             int_cols = [c for c in chunk.select_dtypes(include='float64').columns
                         if any(kw in c.lower() for kw in ['quantity', 'qty', 'count', 'units'])]
             for col in int_cols:
@@ -151,6 +161,7 @@ def run():
     trino_host = os.getenv("TRINO_HOST", "trino.analytics.svc.cluster.local")
     conn = trino_connect(host=trino_host, port=8080, user="pipeline")
     cursor = conn.cursor()
+
     for _attempt in range(5):
         try:
             cursor.execute("CALL hive.system.sync_partition_metadata('sales_eu', 'pipe_eu_sales_to_s3', 'ADD')")

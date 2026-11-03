@@ -46,6 +46,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "lifecycle" {
   rule {
     id     = "lifecycle_rule"
     status = "Enabled"
+
     filter {}
 
     transition {
