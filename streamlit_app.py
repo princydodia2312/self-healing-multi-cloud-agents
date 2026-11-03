@@ -1388,6 +1388,9 @@ def _render_execution_plan(cloud: str, pipeline_id: str):
 # INPUT SECTION
 # ---------------------------------------------------------------------------
 
+# The "Advanced: Architecture Analysis" expander in the NL tab is hidden for now.
+SHOW_ARCH_ANALYSIS = False
+
 tab_nl, tab_upload, tab_existing, tab_trino, tab_obs = st.tabs([
     "💬 Natural Language",
     "📁 Upload Dataset",
@@ -2247,64 +2250,66 @@ with tab_nl:
     # ════════════════════════════════════════════════════════════════════════
     # Advanced: Architecture Analysis (preserved below wizard)
     # ════════════════════════════════════════════════════════════════════════
-    st.markdown("<div style='margin-top:1.5rem;'></div>", unsafe_allow_html=True)
-    with st.expander("🔍 Advanced: Architecture Analysis", expanded=False):
-        st.markdown(
-            '<p style="color:#94a3b8;margin-bottom:0.5rem;">'
-            'See how your workload maps onto the AWS data-lake stack, with a cost estimate.</p>',
-            unsafe_allow_html=True,
-        )
-        _adv_desc = st.text_area(
-            "Description for analysis",
-            value=st.session_state.get("nl_description", ""),
-            placeholder="Describe your pipeline for architecture analysis…",
-            height=80,
-            label_visibility="collapsed",
-            key="nl_adv_desc",
-        )
-        _adv_c1, _ = st.columns([1, 3])
-        with _adv_c1:
-            _analyze_btn = st.button("🔍 Analyze & Plan", type="primary",
-                                     key="nl_wizard_analyze_btn",
-                                     disabled=not _adv_desc.strip())
-        if _analyze_btn and _adv_desc.strip():
-            from utils.nlp_parser import check_pipeline_request
-            _adv_ok, _adv_why = check_pipeline_request(_adv_desc.strip())
-            if not _adv_ok:
-                st.error("🚫 " + (_adv_why or "This doesn't look like a data-pipeline request."))
-            else:
-                with st.spinner("Analyzing requirements and costing the AWS stack…"):
-                    from utils.architecture_advisor import analyze
-                    st.session_state.arch_report = analyze(_adv_desc)
+    # Hidden for now (set SHOW_ARCH_ANALYSIS = True to bring the section back).
+    if SHOW_ARCH_ANALYSIS:
+        st.markdown("<div style='margin-top:1.5rem;'></div>", unsafe_allow_html=True)
+        with st.expander("🔍 Advanced: Architecture Analysis", expanded=False):
+            st.markdown(
+                '<p style="color:#94a3b8;margin-bottom:0.5rem;">'
+                'See how your workload maps onto the AWS data-lake stack, with a cost estimate.</p>',
+                unsafe_allow_html=True,
+            )
+            _adv_desc = st.text_area(
+                "Description for analysis",
+                value=st.session_state.get("nl_description", ""),
+                placeholder="Describe your pipeline for architecture analysis…",
+                height=80,
+                label_visibility="collapsed",
+                key="nl_adv_desc",
+            )
+            _adv_c1, _ = st.columns([1, 3])
+            with _adv_c1:
+                _analyze_btn = st.button("🔍 Analyze & Plan", type="primary",
+                                         key="nl_wizard_analyze_btn",
+                                         disabled=not _adv_desc.strip())
+            if _analyze_btn and _adv_desc.strip():
+                from utils.nlp_parser import check_pipeline_request
+                _adv_ok, _adv_why = check_pipeline_request(_adv_desc.strip())
+                if not _adv_ok:
+                    st.error("🚫 " + (_adv_why or "This doesn't look like a data-pipeline request."))
+                else:
+                    with st.spinner("Analyzing requirements and costing the AWS stack…"):
+                        from utils.architecture_advisor import analyze
+                        st.session_state.arch_report = analyze(_adv_desc)
 
-        _adv_report = st.session_state.get("arch_report")
-        if _adv_report:
-            _render_arch_report(_adv_report)
+            _adv_report = st.session_state.get("arch_report")
+            if _adv_report:
+                _render_arch_report(_adv_report)
 
-        _adv_cloud = "aws"
-        if st.button(
-            "🚀 Deploy on AWS",
-            key="nl_wizard_launch_arch",
-            type="primary",
-            disabled=not _adv_report,
-        ):
-            _arch_ready, _arch_why = _bootstrap_ready(_adv_cloud)
-            if not _arch_ready:
-                st.error("🚫 " + _arch_why)
-                st.stop()
-            if st.session_state.get("nl_answers"):
-                with st.spinner(f"Building config for {_adv_cloud.upper()}…"):
-                    from utils.nlp_parser import _build_from_answers
-                    _apc, _adc, _arc, _aic, _apid, _atk = _build_from_answers(
-                        st.session_state.nl_answers,
-                        st.session_state.get("nl_rules", []),
-                        description=st.session_state.get("nl_description", ""),
-                        cloud_override=_adv_cloud,
-                    )
-                _start_run(_apc, _adc, _arc, _aic, _apid, _atk)
-                st.rerun()
-            else:
-                st.warning("Complete the wizard steps first to set pipeline fields.")
+            _adv_cloud = "aws"
+            if st.button(
+                "🚀 Deploy on AWS",
+                key="nl_wizard_launch_arch",
+                type="primary",
+                disabled=not _adv_report,
+            ):
+                _arch_ready, _arch_why = _bootstrap_ready(_adv_cloud)
+                if not _arch_ready:
+                    st.error("🚫 " + _arch_why)
+                    st.stop()
+                if st.session_state.get("nl_answers"):
+                    with st.spinner(f"Building config for {_adv_cloud.upper()}…"):
+                        from utils.nlp_parser import _build_from_answers
+                        _apc, _adc, _arc, _aic, _apid, _atk = _build_from_answers(
+                            st.session_state.nl_answers,
+                            st.session_state.get("nl_rules", []),
+                            description=st.session_state.get("nl_description", ""),
+                            cloud_override=_adv_cloud,
+                        )
+                    _start_run(_apc, _adc, _arc, _aic, _apid, _atk)
+                    st.rerun()
+                else:
+                    st.warning("Complete the wizard steps first to set pipeline fields.")
 
 # launch_nl is no longer a button — wizard handles deploy directly in step 4
 launch_nl = False
